@@ -1,0 +1,43 @@
+{
+  "displayName": "Homebridge Samsung WindFree AC",
+  "name": "homebridge-samsung-windfree-ac",
+  "version": "0.1.0",
+  "description": "Homebridge plugin for Samsung WindFree AC.",
+  "license": "Apache-2.0",
+  "private": false,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/igorxmath/homebridge-samsung-windfree-ac.git"
+  },
+  "bugs": {
+    "url": "https://github.com/igorxmath/homebridge-samsung-windfree-ac/issues"
+  },
+  "engines": {
+    "node": "^18.17.0 || ^20.7.0",
+    "homebridge": "^1.7.0"
+  },
+  "main": "dist/index.js",
+  "scripts": {
+    "lint": "eslint src/**.ts --max-warnings=0",
+    "watch": "npm run build && sudo hb-service link && nodemon",
+    "build": "rimraf ./dist && tsc",
+    "prepublishOnly": "npm run lint && npm run build"
+  },
+  "keywords": [
+    "homebridge-plugin"
+  ],
+  "dependencies": {
+    "axios": "^1.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^18.18.8",
+    "@typescript-eslint/eslint-plugin": "^6.10.0",
+    "@typescript-eslint/parser": "^6.10.0",
+    "eslint": "^8.53.0",
+    "homebridge": "^1.7.0",
+    "nodemon": "^3.0.1",
+    "rimraf": "^5.0.5",
+    "ts-node": "^10.9.1",
+    "typescript": "^5.2.2"
+  }
+}

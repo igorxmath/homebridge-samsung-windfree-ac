@@ -1,0 +1,36 @@
+{
+  "pluginAlias": "Homebridge Samsung WindFree AC",
+  "pluginType": "platform",
+  "singular": true,
+  "schema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "title": "Name",
+        "type": "string",
+        "required": true,
+        "default": "Samsung WindFree AC"
+      },
+      "BaseURL": {
+        "title": "Base URL",
+        "type": "string",
+        "required": true,
+        "default": "https://api.smartthings.com/v1/"
+      },
+      "AccessToken": {
+        "title": "Access Token",
+        "type": "string",
+        "required": true,
+        "default": ""
+      },
+      "OptionalWindFreeSwitch": {
+        "title": "Expose a switch to enable/disable WindFree mode",
+        "type": "boolean",
+        "required": false,
+        "default": false
+      }
+    }
+  },
+  "form": null,
+  "display": null
+}
