@@ -55,9 +55,9 @@ export class AirConditionerPlatformAccessory {
     this.healthURL = 'devices/' + accessory.context.device.deviceId + '/health';
 
     this.accessory.getService(this.platform.Service.AccessoryInformation)!
-      .setCharacteristic(this.platform.Characteristic.Manufacturer, accessory.context.device.manufacturerName)
-      .setCharacteristic(this.platform.Characteristic.Model, accessory.context.device.ofc.modelNumber)
-      .setCharacteristic(this.platform.Characteristic.SerialNumber, accessory.context.device.ofc.firmwareVersion);
+      .setCharacteristic(this.platform.Characteristic.Manufacturer, 'Samsung')
+      .setCharacteristic(this.platform.Characteristic.Model, 'WindFree')
+      .setCharacteristic(this.platform.Characteristic.SerialNumber, '1.0.0');
 
     this.service =
       this.accessory.getService(this.platform.Service.Thermostat) ||
