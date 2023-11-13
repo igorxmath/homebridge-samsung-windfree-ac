@@ -51,6 +51,13 @@ export class HomebridgePlatform implements DynamicPlatformPlugin {
       const capabilities = device.components[0].capabilities
         .map((capability: { id: string }) => capability.id);
 
+      this.log.debug('Discovered device:', device.label, capabilities);
+
+      if (!this.doesDeviceSupportCapabilities(capabilities)) {
+        this.log.warn('Device has unsupported capabilities:', device.label);
+        return;
+      }
+
       const existingAccessory = this.accessories.find(accessory => accessory.UUID === uuid);
 
       if (existingAccessory) {
@@ -69,5 +76,15 @@ export class HomebridgePlatform implements DynamicPlatformPlugin {
         this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       }
     }
+  }
+
+  doesDeviceSupportCapabilities(capabilities: string[]): boolean {
+    const supportedCapabilities = AirConditionerPlatformAccessory.supportedCapabilities;
+
+    return supportedCapabilities.every(capability => {
+      this.log.debug('Checking if device supports capability:', capability);
+
+      return capabilities.includes(capability);
+    });
   }
 }

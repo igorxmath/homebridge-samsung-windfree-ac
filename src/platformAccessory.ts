@@ -31,6 +31,14 @@ export class AirConditionerPlatformAccessory {
 
   private temperatureUnit: TemperatureUnit = TemperatureUnit.Celsius;
 
+  public static readonly supportedCapabilities =
+    [
+      'switch',
+      'airConditionerMode',
+      'thermostatCoolingSetpoint',
+      'custom.airConditionerOptionalMode',
+    ];
+
   protected name: string;
   protected commandURL: string;
   protected statusURL: string;
