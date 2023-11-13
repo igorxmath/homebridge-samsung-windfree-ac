@@ -36,7 +36,6 @@ export class AirConditionerPlatformAccessory {
       'switch',
       'airConditionerMode',
       'thermostatCoolingSetpoint',
-      'custom.airConditionerOptionalMode',
     ];
 
   protected name: string;
