@@ -55,7 +55,7 @@ export class HomebridgePlatform implements DynamicPlatformPlugin {
 
       if (!this.doesDeviceSupportCapabilities(capabilities)) {
         this.log.warn('Device has unsupported capabilities:', device.label);
-        return;
+        continue;
       }
 
       const existingAccessory = this.accessories.find(accessory => accessory.UUID === uuid);
