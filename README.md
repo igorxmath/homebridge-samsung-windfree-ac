@@ -21,7 +21,7 @@ Configuration parameters:
 
 - `name`: The name of the platform.
 - `BaseURL`: The base URL for the API.
-- `AccessToken`: Your access token.
+- `AccessToken`: Your access token. They can be created and managed on the [personal access tokens page.](https://account.smartthings.com/login?redirect=https%3A%2F%2Faccount.smartthings.com%2Ftokens)
 
 Here is a sample configuration:
 
