@@ -1,5 +1,4 @@
 import { API, DynamicPlatformPlugin, Logger, PlatformAccessory, PlatformConfig, Service, Characteristic } from 'homebridge';
-import axios from 'axios';
 
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
 import { AirConditionerPlatformAccessory } from './platformAccessory';
@@ -9,13 +8,6 @@ export class HomebridgePlatform implements DynamicPlatformPlugin {
   public readonly Characteristic: typeof Characteristic = this.api.hap.Characteristic;
 
   public readonly accessories: PlatformAccessory[] = [];
-
-  private axInstace = axios.create(
-    {
-      baseURL: this.config.BaseURL,
-      headers: { 'Authorization': 'Bearer ' + this.config.AccessToken },
-    },
-  );
 
   constructor(
     public readonly log: Logger,
@@ -38,12 +30,18 @@ export class HomebridgePlatform implements DynamicPlatformPlugin {
   }
 
   async discoverDevices() {
-    const { status, data } = await this.axInstace.get('/devices');
+    const response = await fetch(`${this.config.BaseURL}/devices`, {
+      headers: {
+        'Authorization': `Bearer ${this.config.AccessToken}`,
+      },
+    });
 
-    if (status !== 200) {
+    if (!response.ok) {
       this.log.error('Failed to get devices from API');
       return;
     }
+
+    const data: any = await response.json();
 
     for (const device of data.items) {
       const uuid = this.api.hap.uuid.generate(device.deviceId);
