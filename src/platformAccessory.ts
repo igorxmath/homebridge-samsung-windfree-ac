@@ -1,5 +1,4 @@
 import { Service, PlatformAccessory, CharacteristicValue } from 'homebridge';
-import axios from 'axios';
 
 import { HomebridgePlatform } from './platform';
 
@@ -43,13 +42,6 @@ export class AirConditionerPlatformAccessory {
   protected statusURL: string;
   protected healthURL: string;
 
-  private axInstace = axios.create(
-    {
-      baseURL: this.platform.config.BaseURL,
-      headers: { 'Authorization': 'Bearer ' + this.platform.config.AccessToken },
-    },
-  );
-
   constructor(
     private readonly platform: HomebridgePlatform,
     private readonly accessory: PlatformAccessory,
@@ -57,9 +49,9 @@ export class AirConditionerPlatformAccessory {
   ) {
 
     this.name = accessory.context.device.label;
-    this.commandURL = 'devices/' + accessory.context.device.deviceId + '/commands';
-    this.statusURL = 'devices/' + accessory.context.device.deviceId + '/status';
-    this.healthURL = 'devices/' + accessory.context.device.deviceId + '/health';
+    this.commandURL = this.platform.config.BaseURL + '/devices/' + accessory.context.device.deviceId + '/commands';
+    this.statusURL = this.platform.config.BaseURL + '/devices/' + accessory.context.device.deviceId + '/status';
+    this.healthURL = this.platform.config.BaseURL + '/devices/' + accessory.context.device.deviceId + '/health';
 
     this.accessory.getService(this.platform.Service.AccessoryInformation)!
       .setCharacteristic(this.platform.Characteristic.Manufacturer, 'Samsung')
@@ -138,17 +130,24 @@ export class AirConditionerPlatformAccessory {
       return;
     }
 
-    const { status } = await this.axInstace.post(this.commandURL, {
-      commands: [
-        {
-          capability: 'custom.airConditionerOptionalMode',
-          command: 'setAcOptionalMode',
-          arguments: value ? [AirConditionerOptionalMode.WindFree] : [AirConditionerOptionalMode.Off],
-        },
-      ],
+    const response = await fetch(this.commandURL, {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + this.platform.config.AccessToken,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        commands: [
+          {
+            capability: 'custom.airConditionerOptionalMode',
+            command: 'setAcOptionalMode',
+            arguments: value ? [AirConditionerOptionalMode.WindFree] : [AirConditionerOptionalMode.Off],
+          },
+        ],
+      }),
     });
 
-    if (status !== 200) {
+    if (!response.ok) {
       this.platform.log.error('Failed to set WindFreeSwitch');
     }
   }
@@ -248,11 +247,16 @@ export class AirConditionerPlatformAccessory {
       },
     ];
 
-    const { status } = await this.axInstace.post(this.commandURL, {
-      commands,
+    const response = await fetch(this.commandURL, {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + this.platform.config.AccessToken,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ commands }),
     });
 
-    if (status !== 200) {
+    if (!response.ok) {
       this.platform.log.error('Failed to set TargetHeatingCoolingState');
     }
   }
@@ -278,26 +282,43 @@ export class AirConditionerPlatformAccessory {
   private async handleTargetTemperatureSet(value: CharacteristicValue) {
     this.platform.log.debug('Triggered SET TargetTemperature:', value);
 
-    const { status } = await this.axInstace.post(this.commandURL, {
-      commands: [
-        {
-          capability: 'thermostatCoolingSetpoint',
-          command: 'setCoolingSetpoint',
-          arguments: [value],
-        },
-      ],
+    const response = await fetch(this.commandURL, {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + this.platform.config.AccessToken,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        commands: [
+          {
+            capability: 'thermostatCoolingSetpoint',
+            command: 'setCoolingSetpoint',
+            arguments: [value],
+          },
+        ],
+      }),
     });
 
-    if (status !== 200) {
+    if (!response.ok) {
       this.platform.log.error('Failed to set TargetTemperature');
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private async getDeviceStatus(): Promise<any> {
+  private async getDeviceStatus() {
     this.platform.log.debug('Triggered GET DeviceStatus');
 
-    const { data } = await this.axInstace.get(this.statusURL);
+    const response = await fetch(this.statusURL, {
+      headers: {
+        'Authorization': 'Bearer ' + this.platform.config.AccessToken,
+      },
+    });
+
+    if (!response.ok) {
+      this.platform.log.error('Failed to get device status');
+      return;
+    }
+
+    const data: any = await response.json();
 
     return data.components.main;
   }
