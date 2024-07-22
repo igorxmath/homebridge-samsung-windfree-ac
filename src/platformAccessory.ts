@@ -25,6 +25,11 @@ enum AirConditionerOptionalMode {
   Off = 'off'
 }
 
+enum AirConditionerDisplayState {
+  On = 'Light_Off',
+  Off = 'Light_On'
+}
+
 export class AirConditionerPlatformAccessory {
   private service: Service;
 
@@ -102,6 +107,28 @@ export class AirConditionerPlatformAccessory {
         this.accessory.removeService(windFreeSwitchService);
       }
     }
+
+    this.platform.log.debug('Optional Display Switch: ', this.platform.config.OptionalDisplaySwitch);
+    if (this.platform.config.OptionalDisplaySwitch) {
+      this.platform.log.debug('Adding Display Switch');
+
+      const displaySwitchService =
+      this.accessory.getService('Display') ||
+      this.accessory.addService(this.platform.Service.Switch, 'Display', `display-${accessory.context.device.deviceId}`);
+
+      displaySwitchService.setCharacteristic(this.platform.Characteristic.Name, 'Display');
+
+      displaySwitchService.getCharacteristic(this.platform.Characteristic.On)
+        .onGet(this.handleDisplaySwitchGet.bind(this))
+        .onSet(this.handleDisplaySwitchSet.bind(this));
+    } else {
+      const displaySwitchService = this.accessory.getService('Display');
+      if (displaySwitchService) {
+        this.platform.log.debug('Removing Display Switch');
+
+        this.accessory.removeService(displaySwitchService);
+      }
+    }
   }
 
   private async handleWindFreeSwitchGet(): Promise<CharacteristicValue> {
@@ -149,6 +176,44 @@ export class AirConditionerPlatformAccessory {
 
     if (!response.ok) {
       this.platform.log.error('Failed to set WindFreeSwitch');
+    }
+  }
+
+  private async handleDisplaySwitchGet(): Promise<CharacteristicValue> {
+    this.platform.log.debug('Triggered GET DisplaySwitch');
+
+    const deviceStatus = await this.getDeviceStatus();
+    const displaySwitchStatus = deviceStatus['samsungce.airConditionerLighting'].lighting.value;
+
+    return displaySwitchStatus === SwitchState.On;
+  }
+
+  private async handleDisplaySwitchSet(value: CharacteristicValue) {
+    this.platform.log.debug('Triggered SET DisplaySwitch:', value);
+
+    const response = await fetch(this.commandURL, {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + this.platform.config.AccessToken,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        commands: [
+          {
+            capability: 'execute',
+            command: 'execute',
+            arguments: ['mode/vs/0', {
+              'x.com.samsung.da.options': [
+                value ? AirConditionerDisplayState.On : AirConditionerDisplayState.Off,
+              ],
+            }],
+          },
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      this.platform.log.error('Failed to set DisplaySwitch');
     }
   }
 
