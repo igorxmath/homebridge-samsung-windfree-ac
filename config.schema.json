@@ -28,6 +28,12 @@
         "type": "boolean",
         "required": false,
         "default": false
+      },
+      "OptionalDisplaySwitch": {
+        "title": "Expose a switch to turn on/off the display light",
+        "type": "boolean",
+        "required": false,
+        "default": false
       }
     }
   },
