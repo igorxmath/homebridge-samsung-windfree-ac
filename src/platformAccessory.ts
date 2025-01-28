@@ -183,8 +183,14 @@ export class AirConditionerPlatformAccessory {
     this.platform.log.debug('Triggered GET DisplaySwitch');
 
     const deviceStatus = await this.getDeviceStatus();
+    if ('samsungce.airConditionerLighting' !in deviceStatus) {
+      // if the property is not sent back by the device just return true if the device is on and false otherwise
+      // => should be representative of the true state most of the time (as long as the switch isn't used)
+      const airConditionerSwitchStatus = deviceStatus.switch.switch.value as SwitchState;
+      return airConditionerSwitchStatus === SwitchState.On
+    }
+      
     const displaySwitchStatus = deviceStatus['samsungce.airConditionerLighting'].lighting.value;
-
     return displaySwitchStatus === SwitchState.On;
   }
 
