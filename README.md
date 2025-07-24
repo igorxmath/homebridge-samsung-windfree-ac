@@ -48,6 +48,12 @@ Here is a sample configuration:
 - `windFree`
 > To enable this mode, you need to select the `windFree` option in the plugin settings.
 
+## Debugging
+
+For detailed instructions on how to debug this plugin with breakpoints in WebStorm or VS Code, please see the [DEBUGGING.md](DEBUGGING.md) file.
+
+> **Note:** To access the Homebridge WebUI during debugging (http://localhost:8581), make sure the homebridge-config-ui-x plugin is installed. Run `npm install` before debugging to ensure all dependencies are installed.
+
 ## Roadmap
 - [x] Add support for `windFree` mode.
 - [ ] Add automated tests and CI/CD.
