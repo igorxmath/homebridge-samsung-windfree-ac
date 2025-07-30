@@ -1,6 +1,7 @@
 import { Service, PlatformAccessory, CharacteristicValue } from 'homebridge';
 
 import { HomebridgePlatform } from './platform';
+import {SmartThingsClient} from '@smartthings/core-sdk';
 
 enum AirConditionerMode {
   Auto = 'auto',
@@ -51,6 +52,7 @@ export class AirConditionerPlatformAccessory {
     private readonly platform: HomebridgePlatform,
     private readonly accessory: PlatformAccessory,
     private readonly capabilities: string[],
+    protected readonly client: SmartThingsClient,
   ) {
 
     this.name = accessory.context.device.label;
@@ -157,24 +159,13 @@ export class AirConditionerPlatformAccessory {
       return;
     }
 
-    const response = await fetch(this.commandURL, {
-      method: 'POST',
-      headers: {
-        'Authorization': 'Bearer ' + this.platform.config.AccessToken,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        commands: [
-          {
-            capability: 'custom.airConditionerOptionalMode',
-            command: 'setAcOptionalMode',
-            arguments: value ? [AirConditionerOptionalMode.WindFree] : [AirConditionerOptionalMode.Off],
-          },
-        ],
-      }),
+    const response = await this.client.devices.executeCommand(this.accessory.context.device.deviceId, {
+      capability: 'custom.airConditionerOptionalMode',
+      command: 'setAcOptionalMode',
+      arguments: value ? [AirConditionerOptionalMode.WindFree] : [AirConditionerOptionalMode.Off],
     });
 
-    if (!response.ok) {
+    if (!response.results.length) {
       this.platform.log.error('Failed to set WindFreeSwitch');
     }
   }
@@ -191,28 +182,17 @@ export class AirConditionerPlatformAccessory {
   private async handleDisplaySwitchSet(value: CharacteristicValue) {
     this.platform.log.debug('Triggered SET DisplaySwitch:', value);
 
-    const response = await fetch(this.commandURL, {
-      method: 'POST',
-      headers: {
-        'Authorization': 'Bearer ' + this.platform.config.AccessToken,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        commands: [
-          {
-            capability: 'execute',
-            command: 'execute',
-            arguments: ['mode/vs/0', {
-              'x.com.samsung.da.options': [
-                value ? AirConditionerDisplayState.On : AirConditionerDisplayState.Off,
-              ],
-            }],
-          },
+    const response = await this.client.devices.executeCommand(this.accessory.context.device.deviceId, {
+      capability: 'execute',
+      command: 'execute',
+      arguments: ['mode/vs/0', {
+        'x.com.samsung.da.options': [
+          value ? AirConditionerDisplayState.On : AirConditionerDisplayState.Off,
         ],
-      }),
+      }],
     });
 
-    if (!response.ok) {
+    if (!response.results.length) {
       this.platform.log.error('Failed to set DisplaySwitch');
     }
   }
@@ -232,8 +212,8 @@ export class AirConditionerPlatformAccessory {
     const currentHeatingCoolingState = this.platform.Characteristic.CurrentHeatingCoolingState;
     const airConditionerSwitchStatus = deviceStatus.switch.switch.value as SwitchState;
     const airConditionerMode = deviceStatus.airConditionerMode.airConditionerMode.value as AirConditionerMode;
-    const coolingSetpoint = deviceStatus.thermostatCoolingSetpoint.coolingSetpoint.value;
-    const temperature = deviceStatus.temperatureMeasurement.temperature.value;
+    const coolingSetpoint = deviceStatus.thermostatCoolingSetpoint.coolingSetpoint.value as number;
+    const temperature = deviceStatus.temperatureMeasurement.temperature.value as number;
 
     this.platform.log.debug('CurrentHeatingCoolingState:', airConditionerMode);
 
@@ -312,16 +292,9 @@ export class AirConditionerPlatformAccessory {
       },
     ];
 
-    const response = await fetch(this.commandURL, {
-      method: 'POST',
-      headers: {
-        'Authorization': 'Bearer ' + this.platform.config.AccessToken,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ commands }),
-    });
+    const response = await this.client.devices.executeCommands(this.accessory.context.device.deviceId, commands);
 
-    if (!response.ok) {
+    if (!response.results.length) {
       this.platform.log.error('Failed to set TargetHeatingCoolingState');
     }
   }
@@ -332,7 +305,7 @@ export class AirConditionerPlatformAccessory {
     const deviceStatus = await this.getDeviceStatus();
     const temperature = deviceStatus.temperatureMeasurement.temperature.value;
 
-    return temperature;
+    return temperature as CharacteristicValue;
   }
 
   private async handleTargetTemperatureGet(): Promise<CharacteristicValue> {
@@ -341,49 +314,31 @@ export class AirConditionerPlatformAccessory {
     const deviceStatus = await this.getDeviceStatus();
     const temperature = deviceStatus.thermostatCoolingSetpoint.coolingSetpoint.value;
 
-    return temperature;
+    return temperature as CharacteristicValue;
   }
 
   private async handleTargetTemperatureSet(value: CharacteristicValue) {
     this.platform.log.debug('Triggered SET TargetTemperature:', value);
 
-    const response = await fetch(this.commandURL, {
-      method: 'POST',
-      headers: {
-        'Authorization': 'Bearer ' + this.platform.config.AccessToken,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        commands: [
-          {
-            capability: 'thermostatCoolingSetpoint',
-            command: 'setCoolingSetpoint',
-            arguments: [value],
-          },
-        ],
-      }),
+    const response = await this.client.devices.executeCommand(this.accessory.context.device.deviceId, {
+      capability: 'thermostatCoolingSetpoint',
+      command: 'setCoolingSetpoint',
+      arguments: [value as number],
     });
 
-    if (!response.ok) {
+    if (!response.results.length) {
       this.platform.log.error('Failed to set TargetTemperature');
     }
   }
 
   private async getDeviceStatus() {
     this.platform.log.debug('Triggered GET DeviceStatus');
+    const data = await this.client.devices.getStatus(this.accessory.context.device.deviceId);
 
-    const response = await fetch(this.statusURL, {
-      headers: {
-        'Authorization': 'Bearer ' + this.platform.config.AccessToken,
-      },
-    });
-
-    if (!response.ok) {
+    if (!data.components?.main) {
       this.platform.log.error('Failed to get device status');
-      return;
+      throw new Error('Failed to get device status');
     }
-
-    const data: any = await response.json();
 
     return data.components.main;
   }

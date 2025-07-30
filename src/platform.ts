@@ -2,12 +2,17 @@ import { API, DynamicPlatformPlugin, Logger, PlatformAccessory, PlatformConfig, 
 
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
 import { AirConditionerPlatformAccessory } from './platformAccessory';
+import { AuthService } from './authService';
+import { Component, SmartThingsClient } from '@smartthings/core-sdk';
+import { Authenticator} from '@smartthings/core-sdk';
+import { Device } from '@smartthings/core-sdk/dist/endpoint/devices';
 
 export class HomebridgePlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service = this.api.hap.Service;
   public readonly Characteristic: typeof Characteristic = this.api.hap.Characteristic;
 
   public readonly accessories: PlatformAccessory[] = [];
+  public readonly authService!: AuthService;
 
   constructor(
     public readonly log: Logger,
@@ -16,6 +21,8 @@ export class HomebridgePlatform implements DynamicPlatformPlugin {
 
   ) {
     this.log.debug('Finished initializing platform:', this.config.name);
+
+    this.authService = new AuthService(this.config, this.log);
 
     this.api.on('didFinishLaunching', () => {
       log.debug('Executed didFinishLaunching callback');
@@ -30,29 +37,36 @@ export class HomebridgePlatform implements DynamicPlatformPlugin {
   }
 
   async discoverDevices() {
-    const response = await fetch(`${this.config.BaseURL}/devices`, {
-      headers: {
-        'Authorization': `Bearer ${this.config.AccessToken}`,
-      },
-    });
+    const authenticator: Authenticator = await this.authService.getAuthenticator();
 
-    if (!response.ok) {
-      this.log.error('Failed to get devices from API');
-      return;
+    const client: SmartThingsClient = new SmartThingsClient(authenticator);
+
+    let devices: Device[] = [];
+
+    try {
+      devices = await client.devices.list();
+    } catch (error) {
+      let errorMessage = 'Problem with retrieving devices. ';
+      if (error instanceof Error) {
+        errorMessage = `${errorMessage} ${error.message}`;
+      }
+      this.log.error(errorMessage);
     }
 
-    const data: any = await response.json();
-
-    for (const device of data.items) {
+    for (const device of devices) {
       const uuid = this.api.hap.uuid.generate(device.deviceId);
 
-      const capabilities = device.components[0].capabilities
-        .map((capability: { id: string }) => capability.id);
+      const deviceComponents: Component[] = device.components ?? [];
 
-      this.log.debug('Discovered device:', device.label, capabilities);
+      const capabilities = deviceComponents[0]?.capabilities
+        .map((capability: { id: string }) => capability.id) ?? [];
+
+      const label = device.label ?? device.deviceId;
+
+      this.log.debug('Discovered device:', label, capabilities);
 
       if (!this.doesDeviceSupportCapabilities(capabilities)) {
-        this.log.warn('Device has unsupported capabilities:', device.label);
+        this.log.warn('Device has unsupported capabilities:', label);
         continue;
       }
 
@@ -61,15 +75,15 @@ export class HomebridgePlatform implements DynamicPlatformPlugin {
       if (existingAccessory) {
         this.log.info('Restoring existing accessory from cache:', existingAccessory.displayName);
 
-        new AirConditionerPlatformAccessory(this, existingAccessory, capabilities);
+        new AirConditionerPlatformAccessory(this, existingAccessory, capabilities, client);
       } else {
-        this.log.info('Adding new accessory:', device.label);
+        this.log.info('Adding new accessory:', label);
 
-        const accessory = new this.api.platformAccessory(device.label, uuid);
+        const accessory = new this.api.platformAccessory(label, uuid);
 
         accessory.context.device = device;
 
-        new AirConditionerPlatformAccessory(this, accessory, capabilities);
+        new AirConditionerPlatformAccessory(this, accessory, capabilities, client);
 
         this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       }
