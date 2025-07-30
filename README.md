@@ -106,3 +106,4 @@ For detailed instructions on how to debug this plugin with breakpoints in WebSto
 - [x] Add support for `windFree` mode.
 - [x] Add support for Schema App integration.
 - [ ] Add automated tests and CI/CD.
+- [x] Support for OAuth2.

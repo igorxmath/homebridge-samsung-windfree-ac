@@ -212,8 +212,8 @@ export class AirConditionerPlatformAccessory {
     const currentHeatingCoolingState = this.platform.Characteristic.CurrentHeatingCoolingState;
     const airConditionerSwitchStatus = deviceStatus.switch.switch.value as SwitchState;
     const airConditionerMode = deviceStatus.airConditionerMode.airConditionerMode.value as AirConditionerMode;
-    const coolingSetpoint = deviceStatus.thermostatCoolingSetpoint.coolingSetpoint.value;
-    const temperature = deviceStatus.temperatureMeasurement.temperature.value;
+    const coolingSetpoint = deviceStatus.thermostatCoolingSetpoint.coolingSetpoint.value as number;
+    const temperature = deviceStatus.temperatureMeasurement.temperature.value as number;
 
     this.platform.log.debug('CurrentHeatingCoolingState:', airConditionerMode);
 
@@ -222,7 +222,6 @@ export class AirConditionerPlatformAccessory {
     } else if (airConditionerMode === AirConditionerMode.Cool) {
       return currentHeatingCoolingState.COOL;
     } else if (airConditionerMode === AirConditionerMode.Auto) {
-      // @ts-ignore
       return temperature > coolingSetpoint ? currentHeatingCoolingState.COOL : currentHeatingCoolingState.HEAT;
     } else if (airConditionerMode === AirConditionerMode.Heat) {
       return currentHeatingCoolingState.HEAT;

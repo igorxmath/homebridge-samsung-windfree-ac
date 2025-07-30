@@ -2,10 +2,10 @@ import { API, DynamicPlatformPlugin, Logger, PlatformAccessory, PlatformConfig, 
 
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
 import { AirConditionerPlatformAccessory } from './platformAccessory';
-import { AuthService, AuthConfig } from './authService';
-import {Component, SmartThingsClient} from '@smartthings/core-sdk';
-import {AuthData, Authenticator, RefreshData, RefreshTokenAuthenticator, RefreshTokenStore} from '@smartthings/core-sdk';
-import {Device} from '@smartthings/core-sdk/dist/endpoint/devices';
+import { AuthService } from './authService';
+import { Component, SmartThingsClient } from '@smartthings/core-sdk';
+import { Authenticator} from '@smartthings/core-sdk';
+import { Device } from '@smartthings/core-sdk/dist/endpoint/devices';
 
 export class HomebridgePlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service = this.api.hap.Service;

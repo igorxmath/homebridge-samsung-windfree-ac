@@ -2,13 +2,13 @@
   "displayName": "Homebridge Samsung WindFree AC",
   "name": "homebridge-samsung-windfree-ac",
   "version": "1.1.0",
-  "description": "Homebridge plugin for Samsung WindFree AC.",
+  "description": "Homebridge plugin for Samsung WindFree AC with support for OAuth2 (not required to change token everyday). Base on https://github.com/igorxmath/homebridge-samsung-windfree-ac/",
   "license": "Apache-2.0",
   "private": false,
   "homepage": "https://github.com/igorxmath/homebridge-samsung-windfree-ac/",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/igorxmath/homebridge-samsung-windfree-ac.git"
+    "url": "git+https://github.com/qubiack/homebridge-samsung-windfree-ac.git"
   },
   "bugs": {
     "url": "https://github.com/igorxmath/homebridge-samsung-windfree-ac/issues"

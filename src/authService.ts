@@ -1,5 +1,12 @@
-import {Logger, PlatformConfig} from 'homebridge';
-import {AuthData, Authenticator, BearerTokenAuthenticator, RefreshData, RefreshTokenAuthenticator, RefreshTokenStore} from '@smartthings/core-sdk';
+import { Logger, PlatformConfig } from 'homebridge';
+import {
+  AuthData,
+  Authenticator,
+  BearerTokenAuthenticator,
+  RefreshData,
+  RefreshTokenAuthenticator,
+  RefreshTokenStore,
+} from '@smartthings/core-sdk';
 import * as fs from 'node:fs';
 import path from 'node:path';
 
@@ -45,7 +52,7 @@ export class AuthService implements RefreshTokenStore {
   }
 
   async getPersonalAccessToken(): Promise<Authenticator> {
-      return new BearerTokenAuthenticator(this.config.AccessToken as string);
+    return new BearerTokenAuthenticator(this.config.AccessToken as string);
   }
 
   async getRefreshData(): Promise<RefreshData> {
@@ -77,7 +84,7 @@ export class AuthService implements RefreshTokenStore {
       const readConfig = JSON.parse(fs.readFileSync(this.configPath, 'utf8'));
       return readConfig.platforms.find((p: { platform: string; }) => p.platform === this.config.platform);
     } catch (error) {
-      console.error('Error when reading configuration:', error);
+      this.log.error('Error when reading configuration:', error);
       return null;
     }
   }
@@ -89,7 +96,7 @@ export class AuthService implements RefreshTokenStore {
       newConfig.platforms[newConfig.platforms.indexOf(platform)] = platformConfig;
       fs.writeFileSync(this.configPath, JSON.stringify(newConfig, null, 4), 'utf8');
     } catch (error) {
-      console.error('Error when writing configuration:', error);
+      this.log.error('Error when writing configuration:', error);
     }
   }
 
