@@ -1,7 +1,7 @@
 {
   "displayName": "Homebridge Samsung WindFree AC",
   "name": "homebridge-samsung-windfree-ac",
-  "version": "1.1.2",
+  "version": "1.1.3",
   "description": "Homebridge plugin for Samsung WindFree AC.",
   "license": "Apache-2.0",
   "private": false,
@@ -14,7 +14,7 @@
     "url": "https://github.com/igorxmath/homebridge-samsung-windfree-ac/issues"
   },
   "engines": {
-    "node": "^22",
+     "node": "^20 || ^22",
     "homebridge": "^1.11.0 || ^2.0.0-beta.0"
   },
   "main": "dist/index.js",
