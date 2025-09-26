@@ -1,21 +1,26 @@
 import { API, DynamicPlatformPlugin, Logger, PlatformAccessory, PlatformConfig, Service, Characteristic } from 'homebridge';
-
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
 import { AirConditionerPlatformAccessory } from './platformAccessory';
+import { AuthService } from './authService';
+import { Component, SmartThingsClient } from '@smartthings/core-sdk';
+import { Authenticator} from '@smartthings/core-sdk';
+import { Device } from '@smartthings/core-sdk/dist/endpoint/devices';
 
 export class HomebridgePlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service = this.api.hap.Service;
   public readonly Characteristic: typeof Characteristic = this.api.hap.Characteristic;
 
   public readonly accessories: PlatformAccessory[] = [];
+  public readonly authService!: AuthService;
 
   constructor(
     public readonly log: Logger,
     public readonly config: PlatformConfig,
     public readonly api: API,
-
   ) {
     this.log.debug('Finished initializing platform:', this.config.name);
+
+    this.authService = new AuthService(this.config, this.log);
 
     this.api.on('didFinishLaunching', () => {
       log.debug('Executed didFinishLaunching callback');
@@ -25,72 +30,36 @@ export class HomebridgePlatform implements DynamicPlatformPlugin {
 
   configureAccessory(accessory: PlatformAccessory) {
     this.log.info('Loading accessory from cache:', accessory.displayName);
-
     this.accessories.push(accessory);
   }
 
   async discoverDevices() {
-    const baseURL = this.config.BaseURL;
-    const accessToken = this.config.AccessToken;
+    const authenticator: Authenticator = await this.authService.getAuthenticator();
+    const client: SmartThingsClient = new SmartThingsClient(authenticator);
 
-    if (!baseURL || typeof baseURL !== 'string' || baseURL.trim() === '') {
-      this.log.error('BaseURL is missing or empty in config. Plugin will not attempt device discovery.');
-      return;
-    }
+    let devices: Device[] = [];
 
-    let url: URL;
     try {
-      url = new URL(baseURL);
-    } catch {
-      this.log.error('BaseURL in config is not a valid URL:', baseURL);
-      return;
+      devices = await client.devices.list();
+    } catch (error) {
+      let errorMessage = 'Problem with retrieving devices. ';
+      if (error instanceof Error) {
+        errorMessage = `${errorMessage} ${error.message}`;
+      }
+      this.log.error(errorMessage);
     }
 
-    if (!accessToken || typeof accessToken !== 'string' || accessToken.trim() === '') {
-      this.log.error('AccessToken is missing or empty in config. Plugin will not attempt device discovery.');
-      return;
-    }
-
-    let response: any;
-    try {
-      response = await fetch(`${url.toString()}/devices`, {
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-        },
-      });
-    } catch {
-      this.log.error('Failed to fetch devices from API');
-      return;
-    }
-
-    if (!response.ok) {
-      this.log.error('Failed to get devices from API. Status:', response.status, response.statusText);
-      return;
-    }
-
-    let data: any;
-    try {
-      data = await response.json();
-    } catch {
-      this.log.error('Failed to parse devices response as JSON');
-      return;
-    }
-
-    if (!data.items || !Array.isArray(data.items)) {
-      this.log.error('API response does not contain a valid items array.');
-      return;
-    }
-
-    for (const device of data.items) {
+    for (const device of devices) {
       const uuid = this.api.hap.uuid.generate(device.deviceId);
+      const deviceComponents: Component[] = device.components ?? [];
+      const capabilities = deviceComponents[0]?.capabilities
+        .map((capability: { id: string }) => capability.id) ?? [];
+      const label = device.label ?? device.deviceId;
 
-      const capabilities = device.components[0].capabilities
-        .map((capability: { id: string }) => capability.id);
-
-      this.log.debug('Discovered device:', device.label, capabilities);
+      this.log.debug('Discovered device:', label, capabilities);
 
       if (!this.doesDeviceSupportCapabilities(capabilities)) {
-        this.log.warn('Device has unsupported capabilities:', device.label);
+        this.log.warn('Device has unsupported capabilities:', label);
         continue;
       }
 
@@ -98,17 +67,12 @@ export class HomebridgePlatform implements DynamicPlatformPlugin {
 
       if (existingAccessory) {
         this.log.info('Restoring existing accessory from cache:', existingAccessory.displayName);
-
-        new AirConditionerPlatformAccessory(this, existingAccessory, capabilities);
+        new AirConditionerPlatformAccessory(this, existingAccessory, capabilities, client);
       } else {
-        this.log.info('Adding new accessory:', device.label);
-
-        const accessory = new this.api.platformAccessory(device.label, uuid);
-
+        this.log.info('Adding new accessory:', label);
+        const accessory = new this.api.platformAccessory(label, uuid);
         accessory.context.device = device;
-
-        new AirConditionerPlatformAccessory(this, accessory, capabilities);
-
+        new AirConditionerPlatformAccessory(this, accessory, capabilities, client);
         this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       }
     }
@@ -116,10 +80,8 @@ export class HomebridgePlatform implements DynamicPlatformPlugin {
 
   doesDeviceSupportCapabilities(capabilities: string[]): boolean {
     const supportedCapabilities = AirConditionerPlatformAccessory.supportedCapabilities;
-
     return supportedCapabilities.every(capability => {
       this.log.debug('Checking if device supports capability:', capability);
-
       return capabilities.includes(capability);
     });
   }

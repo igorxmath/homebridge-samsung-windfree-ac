@@ -1,6 +1,6 @@
 import { Service, PlatformAccessory, CharacteristicValue } from 'homebridge';
-
 import { HomebridgePlatform } from './platform';
+import {SmartThingsClient} from '@smartthings/core-sdk';
 
 enum AirConditionerMode {
   Auto = 'auto',
@@ -32,31 +32,22 @@ enum AirConditionerDisplayState {
 
 export class AirConditionerPlatformAccessory {
   private service: Service;
-
   private temperatureUnit: TemperatureUnit = TemperatureUnit.Celsius;
-
-  public static readonly supportedCapabilities =
-    [
-      'switch',
-      'airConditionerMode',
-      'thermostatCoolingSetpoint',
-    ];
+  public static readonly supportedCapabilities = [
+    'switch',
+    'airConditionerMode',
+    'thermostatCoolingSetpoint',
+  ];
 
   protected name: string;
-  protected commandURL: string;
-  protected statusURL: string;
-  protected healthURL: string;
 
   constructor(
     private readonly platform: HomebridgePlatform,
     private readonly accessory: PlatformAccessory,
     private readonly capabilities: string[],
+    protected readonly client: SmartThingsClient,
   ) {
-
     this.name = accessory.context.device.label;
-    this.commandURL = this.platform.config.BaseURL + '/devices/' + accessory.context.device.deviceId + '/commands';
-    this.statusURL = this.platform.config.BaseURL + '/devices/' + accessory.context.device.deviceId + '/status';
-    this.healthURL = this.platform.config.BaseURL + '/devices/' + accessory.context.device.deviceId + '/health';
 
     this.accessory.getService(this.platform.Service.AccessoryInformation)!
       .setCharacteristic(this.platform.Characteristic.Manufacturer, 'Samsung')
@@ -86,157 +77,91 @@ export class AirConditionerPlatformAccessory {
       .onGet(this.handleTargetTemperatureGet.bind(this))
       .onSet(this.handleTargetTemperatureSet.bind(this));
 
-    this.platform.log.debug('Optional WindFree Switch: ', this.platform.config.OptionalWindFreeSwitch);
     if (this.platform.config.OptionalWindFreeSwitch) {
-      this.platform.log.debug('Adding WindFree Switch');
-
       const windFreeSwitchService =
-      this.accessory.getService('WindFree') ||
-      this.accessory.addService(this.platform.Service.Switch, 'WindFree', `windfree-${accessory.context.device.deviceId}`);
-
+        this.accessory.getService('WindFree') ||
+        this.accessory.addService(this.platform.Service.Switch, 'WindFree', `windfree-${accessory.context.device.deviceId}`);
       windFreeSwitchService.setCharacteristic(this.platform.Characteristic.Name, 'WindFree');
-
       windFreeSwitchService.getCharacteristic(this.platform.Characteristic.On)
         .onGet(this.handleWindFreeSwitchGet.bind(this))
         .onSet(this.handleWindFreeSwitchSet.bind(this));
     } else {
       const windFreeSwitchService = this.accessory.getService('WindFree');
       if (windFreeSwitchService) {
-        this.platform.log.debug('Removing WindFree Switch');
-
         this.accessory.removeService(windFreeSwitchService);
       }
     }
 
-    this.platform.log.debug('Optional Display Switch: ', this.platform.config.OptionalDisplaySwitch);
     if (this.platform.config.OptionalDisplaySwitch) {
-      this.platform.log.debug('Adding Display Switch');
-
       const displaySwitchService =
-      this.accessory.getService('Display') ||
-      this.accessory.addService(this.platform.Service.Switch, 'Display', `display-${accessory.context.device.deviceId}`);
-
+        this.accessory.getService('Display') ||
+        this.accessory.addService(this.platform.Service.Switch, 'Display', `display-${accessory.context.device.deviceId}`);
       displaySwitchService.setCharacteristic(this.platform.Characteristic.Name, 'Display');
-
       displaySwitchService.getCharacteristic(this.platform.Characteristic.On)
         .onGet(this.handleDisplaySwitchGet.bind(this))
         .onSet(this.handleDisplaySwitchSet.bind(this));
     } else {
       const displaySwitchService = this.accessory.getService('Display');
       if (displaySwitchService) {
-        this.platform.log.debug('Removing Display Switch');
-
         this.accessory.removeService(displaySwitchService);
       }
     }
   }
 
   private async handleWindFreeSwitchGet(): Promise<CharacteristicValue> {
-    this.platform.log.debug('Triggered GET WindFreeSwitch');
-
     const deviceStatus = await this.getDeviceStatus();
     const windFreeSwitchStatus = deviceStatus['custom.airConditionerOptionalMode'].acOptionalMode.value as AirConditionerOptionalMode;
     const airConditionerMode = deviceStatus.airConditionerMode.airConditionerMode.value as AirConditionerMode;
-
     if (airConditionerMode === AirConditionerMode.Auto) {
-      this.platform.log.debug('WindFreeSwitch is not supported in Auto mode');
       return false;
     }
-
     return windFreeSwitchStatus === AirConditionerOptionalMode.WindFree;
   }
 
   private async handleWindFreeSwitchSet(value: CharacteristicValue) {
-    this.platform.log.debug('Triggered SET WindFreeSwitch:', value);
-
     const deviceStatus = await this.getDeviceStatus();
     const airConditionerMode = deviceStatus.airConditionerMode.airConditionerMode.value as AirConditionerMode;
-
     if (airConditionerMode === AirConditionerMode.Auto) {
-      this.platform.log.debug('WindFreeSwitch is not supported in Auto mode');
       return;
     }
-
-    const response = await fetch(this.commandURL, {
-      method: 'POST',
-      headers: {
-        'Authorization': 'Bearer ' + this.platform.config.AccessToken,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        commands: [
-          {
-            capability: 'custom.airConditionerOptionalMode',
-            command: 'setAcOptionalMode',
-            arguments: value ? [AirConditionerOptionalMode.WindFree] : [AirConditionerOptionalMode.Off],
-          },
-        ],
-      }),
+    await this.client.devices.executeCommand(this.accessory.context.device.deviceId, {
+      capability: 'custom.airConditionerOptionalMode',
+      command: 'setAcOptionalMode',
+      arguments: value ? [AirConditionerOptionalMode.WindFree] : [AirConditionerOptionalMode.Off],
     });
-
-    if (!response.ok) {
-      this.platform.log.error('Failed to set WindFreeSwitch');
-    }
   }
 
   private async handleDisplaySwitchGet(): Promise<CharacteristicValue> {
-    this.platform.log.debug('Triggered GET DisplaySwitch');
-
     const deviceStatus = await this.getDeviceStatus();
     const displaySwitchStatus = deviceStatus['samsungce.airConditionerLighting'].lighting.value;
-
     return displaySwitchStatus === SwitchState.On;
   }
 
   private async handleDisplaySwitchSet(value: CharacteristicValue) {
-    this.platform.log.debug('Triggered SET DisplaySwitch:', value);
-
-    const response = await fetch(this.commandURL, {
-      method: 'POST',
-      headers: {
-        'Authorization': 'Bearer ' + this.platform.config.AccessToken,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        commands: [
-          {
-            capability: 'execute',
-            command: 'execute',
-            arguments: ['mode/vs/0', {
-              'x.com.samsung.da.options': [
-                value ? AirConditionerDisplayState.On : AirConditionerDisplayState.Off,
-              ],
-            }],
-          },
+    await this.client.devices.executeCommand(this.accessory.context.device.deviceId, {
+      capability: 'execute',
+      command: 'execute',
+      arguments: ['mode/vs/0', {
+        'x.com.samsung.da.options': [
+          value ? AirConditionerDisplayState.On : AirConditionerDisplayState.Off,
         ],
-      }),
+      }],
     });
-
-    if (!response.ok) {
-      this.platform.log.error('Failed to set DisplaySwitch');
-    }
   }
 
   private handleTemperatureDisplayUnitsGet(): CharacteristicValue {
-    this.platform.log.debug('Triggered GET TemperatureDisplayUnits');
-
     return this.temperatureUnit === TemperatureUnit.Celsius
       ? this.platform.Characteristic.TemperatureDisplayUnits.CELSIUS
       : this.platform.Characteristic.TemperatureDisplayUnits.FAHRENHEIT;
   }
 
   private async handleCurrentHeatingCoolingStateGet(): Promise<CharacteristicValue> {
-    this.platform.log.debug('Triggered GET CurrentHeatingCoolingState');
-
     const deviceStatus = await this.getDeviceStatus();
     const currentHeatingCoolingState = this.platform.Characteristic.CurrentHeatingCoolingState;
     const airConditionerSwitchStatus = deviceStatus.switch.switch.value as SwitchState;
     const airConditionerMode = deviceStatus.airConditionerMode.airConditionerMode.value as AirConditionerMode;
-    const coolingSetpoint = deviceStatus.thermostatCoolingSetpoint.coolingSetpoint.value;
-    const temperature = deviceStatus.temperatureMeasurement.temperature.value;
-
-    this.platform.log.debug('CurrentHeatingCoolingState:', airConditionerMode);
-
+    const coolingSetpoint = deviceStatus.thermostatCoolingSetpoint.coolingSetpoint.value as number;
+    const temperature = deviceStatus.temperatureMeasurement.temperature.value as number;
     if (airConditionerSwitchStatus === SwitchState.Off) {
       return currentHeatingCoolingState.OFF;
     } else if (airConditionerMode === AirConditionerMode.Cool) {
@@ -251,15 +176,10 @@ export class AirConditionerPlatformAccessory {
   }
 
   private async handleTargetHeatingCoolingStateGet(): Promise<CharacteristicValue> {
-    this.platform.log.debug('Triggered GET TargetHeatingCoolingState');
-
     const deviceStatus = await this.getDeviceStatus();
     const airConditionerSwitchStatus = deviceStatus.switch.switch.value as SwitchState;
     const targetHeatingCoolingState = this.platform.Characteristic.TargetHeatingCoolingState;
     const airConditionerMode = deviceStatus.airConditionerMode.airConditionerMode.value as AirConditionerMode;
-
-    this.platform.log.debug('TargetHeatingCoolingState:', airConditionerMode);
-
     if (airConditionerSwitchStatus === SwitchState.Off) {
       return targetHeatingCoolingState.OFF;
     } else if (airConditionerMode === AirConditionerMode.Cool) {
@@ -274,12 +194,7 @@ export class AirConditionerPlatformAccessory {
   }
 
   private async handleTargetHeatingCoolingStateSet(value: CharacteristicValue) {
-    this.platform.log.debug('Triggered SET TargetHeatingCoolingState:', value);
-
     const TargetHeatingCoolingState = this.platform.Characteristic.TargetHeatingCoolingState;
-
-    this.platform.log.debug('TargetHeatingCoolingState:', TargetHeatingCoolingState);
-
     const targetHeatingCoolingStateToAirConditionerMode = () => {
       switch (value) {
         case TargetHeatingCoolingState.AUTO:
@@ -292,9 +207,7 @@ export class AirConditionerPlatformAccessory {
           return undefined;
       }
     };
-
     const airConditionerMode = targetHeatingCoolingStateToAirConditionerMode();
-
     const commands = airConditionerMode ? [
       {
         capability: 'switch',
@@ -311,80 +224,34 @@ export class AirConditionerPlatformAccessory {
         command: SwitchState.Off,
       },
     ];
-
-    const response = await fetch(this.commandURL, {
-      method: 'POST',
-      headers: {
-        'Authorization': 'Bearer ' + this.platform.config.AccessToken,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ commands }),
-    });
-
-    if (!response.ok) {
-      this.platform.log.error('Failed to set TargetHeatingCoolingState');
-    }
+    await this.client.devices.executeCommands(this.accessory.context.device.deviceId, commands);
   }
 
   private async handleCurrentTemperatureGet(): Promise<CharacteristicValue> {
-    this.platform.log.debug('Triggered GET CurrentTemperature');
-
     const deviceStatus = await this.getDeviceStatus();
     const temperature = deviceStatus.temperatureMeasurement.temperature.value;
-
-    return temperature;
+    return temperature as CharacteristicValue;
   }
 
   private async handleTargetTemperatureGet(): Promise<CharacteristicValue> {
-    this.platform.log.debug('Triggered GET TargetTemperature');
-
     const deviceStatus = await this.getDeviceStatus();
     const temperature = deviceStatus.thermostatCoolingSetpoint.coolingSetpoint.value;
-
-    return temperature;
+    return temperature as CharacteristicValue;
   }
 
   private async handleTargetTemperatureSet(value: CharacteristicValue) {
-    this.platform.log.debug('Triggered SET TargetTemperature:', value);
-
-    const response = await fetch(this.commandURL, {
-      method: 'POST',
-      headers: {
-        'Authorization': 'Bearer ' + this.platform.config.AccessToken,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        commands: [
-          {
-            capability: 'thermostatCoolingSetpoint',
-            command: 'setCoolingSetpoint',
-            arguments: [value],
-          },
-        ],
-      }),
+    await this.client.devices.executeCommand(this.accessory.context.device.deviceId, {
+      capability: 'thermostatCoolingSetpoint',
+      command: 'setCoolingSetpoint',
+      arguments: [value as number],
     });
-
-    if (!response.ok) {
-      this.platform.log.error('Failed to set TargetTemperature');
-    }
   }
 
   private async getDeviceStatus() {
-    this.platform.log.debug('Triggered GET DeviceStatus');
-
-    const response = await fetch(this.statusURL, {
-      headers: {
-        'Authorization': 'Bearer ' + this.platform.config.AccessToken,
-      },
-    });
-
-    if (!response.ok) {
-      this.platform.log.error('Failed to get device status');
-      return;
+    const data = await this.client.devices.getStatus(this.accessory.context.device.deviceId);
+    if (!data.components?.main) {
+      throw new Error('Failed to get device status');
     }
-
-    const data: any = await response.json();
-
     return data.components.main;
   }
 }

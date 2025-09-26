@@ -8,31 +8,78 @@
       "name": {
         "title": "Name",
         "type": "string",
+        "required": true,
         "default": "Samsung WindFree AC"
       },
       "BaseURL": {
         "title": "Base URL",
         "type": "string",
+        "required": true,
         "default": "https://api.smartthings.com/v1/"
       },
-      "AccessToken": {
-        "title": "Access Token",
+      "authMethod": {
+        "title": "Authentication Method",
         "type": "string",
-        "default": ""
+        "required": true,
+        "default": "oauth2",
+        "oneOf": [
+          { "title": "OAuth2 (Recommended)", "enum": ["oauth2"] },
+          { "title": "Personal Access Token (Expires in 24h)", "enum": ["pat"] }
+        ]
+      },
+      "AccessToken": {
+        "title": "Personal Access Token",
+        "type": "string",
+        "required": false,
+        "default": "",
+        "description": "Only required if using Personal Access Token authentication method. Create at https://account.smartthings.com/tokens",
+        "condition": {
+          "functionBody": "return model.authMethod === \"pat\";"
+        }
+      },
+      "clientId": {
+        "title": "Client ID",
+        "type": "string",
+        "required": false,
+        "default": "",
+        "description": "Client ID from your SmartThings Developer Center",
+        "condition": {
+          "functionBody": "return model.authMethod === \"oauth2\";"
+        }
+      },
+      "clientSecret": {
+        "title": "Client Secret",
+        "type": "string",
+        "required": false,
+        "default": "",
+        "description": "Client Secret from your SmartThings Developer Center",
+        "condition": {
+          "functionBody": "return model.authMethod === \"oauth2\";"
+        }
+      },
+      "refreshToken": {
+        "title": "Refresh Token",
+        "type": "string",
+        "required": false,
+        "default": "",
+        "description": "Refresh Token obtained through the OAuth2 authorization flow",
+        "condition": {
+          "functionBody": "return model.authMethod === \"oauth2\";"
+        }
       },
       "OptionalWindFreeSwitch": {
         "title": "Expose a switch to enable/disable WindFree mode",
         "type": "boolean",
+        "required": false,
         "default": false
       },
       "OptionalDisplaySwitch": {
         "title": "Expose a switch to turn on/off the display light",
         "type": "boolean",
+        "required": false,
         "default": false
       }
     }
-      ,
-      "required": ["name", "BaseURL", "AccessToken"]
   },
   "form": null,
   "display": null
