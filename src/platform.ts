@@ -30,18 +30,56 @@ export class HomebridgePlatform implements DynamicPlatformPlugin {
   }
 
   async discoverDevices() {
-    const response = await fetch(`${this.config.BaseURL}/devices`, {
-      headers: {
-        'Authorization': `Bearer ${this.config.AccessToken}`,
-      },
-    });
+    const baseURL = this.config.BaseURL;
+    const accessToken = this.config.AccessToken;
 
-    if (!response.ok) {
-      this.log.error('Failed to get devices from API');
+    if (!baseURL || typeof baseURL !== 'string' || baseURL.trim() === '') {
+      this.log.error('BaseURL is missing or empty in config. Plugin will not attempt device discovery.');
       return;
     }
 
-    const data: any = await response.json();
+    let url: URL;
+    try {
+      url = new URL(baseURL);
+    } catch {
+      this.log.error('BaseURL in config is not a valid URL:', baseURL);
+      return;
+    }
+
+    if (!accessToken || typeof accessToken !== 'string' || accessToken.trim() === '') {
+      this.log.error('AccessToken is missing or empty in config. Plugin will not attempt device discovery.');
+      return;
+    }
+
+    let response: any;
+    try {
+      response = await fetch(`${url.toString()}/devices`, {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+        },
+      });
+    } catch {
+      this.log.error('Failed to fetch devices from API');
+      return;
+    }
+
+    if (!response.ok) {
+      this.log.error('Failed to get devices from API. Status:', response.status, response.statusText);
+      return;
+    }
+
+    let data: any;
+    try {
+      data = await response.json();
+    } catch {
+      this.log.error('Failed to parse devices response as JSON');
+      return;
+    }
+
+    if (!data.items || !Array.isArray(data.items)) {
+      this.log.error('API response does not contain a valid items array.');
+      return;
+    }
 
     for (const device of data.items) {
       const uuid = this.api.hap.uuid.generate(device.deviceId);
