@@ -4,28 +4,32 @@
  * One-time OAuth setup helper for homebridge-samsung-windfree-ac.
  *
  * It walks you through the SmartThings authorization-code flow and prints the
- * RefreshToken to paste into the plugin config. Run it on a machine with a
- * browser reachable at http://localhost:<port>.
+ * RefreshToken to paste into the plugin config.
+ *
+ * IMPORTANT: SmartThings does NOT allow localhost redirect URIs — the
+ * /authorize endpoint returns HTTP 403 for them. You must use a public HTTPS
+ * URL as the redirect. A convenient one is https://httpbin.org/get, which just
+ * echoes back the query string so you can read the `code`. You then paste that
+ * code here to exchange it for tokens.
  *
  * Prerequisites: an OAuth-In app created with the SmartThings CLI, e.g.
  *
  *   smartthings apps:create
  *     -> "OAuth-In App"
- *     -> Redirect URI:   http://localhost:8000/callback
+ *     -> Redirect URI:   https://httpbin.org/get
  *     -> Scopes:         r:devices:* x:devices:*
  *
- * which yields the OAuth Client ID and Client Secret used below.
+ * which yields the OAuth Client ID and Client Secret used below. To change the
+ * redirect URI / scopes of an existing app: smartthings apps:oauth:update <id>
  */
 
-import http from 'node:http';
 import readline from 'node:readline';
 import { URL } from 'node:url';
 
 const AUTHORIZE_URL = 'https://api.smartthings.com/oauth/authorize';
 const TOKEN_URL = 'https://api.smartthings.com/oauth/token';
 const SCOPES = ['r:devices:*', 'x:devices:*'];
-const DEFAULT_PORT = 8000;
-const CALLBACK_PATH = '/callback';
+const DEFAULT_REDIRECT_URI = 'https://httpbin.org/get';
 
 function ask(rl, question, fallback) {
   return new Promise((resolve) => {
@@ -37,39 +41,25 @@ function ask(rl, question, fallback) {
   });
 }
 
-async function waitForCode(port) {
-  return new Promise((resolve, reject) => {
-    const server = http.createServer((req, res) => {
-      const requestUrl = new URL(req.url, `http://localhost:${port}`);
-      if (requestUrl.pathname !== CALLBACK_PATH) {
-        res.writeHead(404);
-        res.end('Not found');
-        return;
-      }
-
-      const code = requestUrl.searchParams.get('code');
-      const error = requestUrl.searchParams.get('error');
-
-      res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(
-        '<html><body style="font-family:sans-serif">'
-        + (code
-          ? '<h2>Authorization complete</h2><p>You can close this tab and return to the terminal.</p>'
-          : `<h2>Authorization failed</h2><p>${error || 'No code returned.'}</p>`)
-        + '</body></html>',
-      );
-
-      server.close();
+/** Accepts either a raw code or the full redirect URL and extracts the code. */
+function parseCode(input) {
+  const value = input.trim();
+  if (value.includes('code=')) {
+    try {
+      const url = new URL(value);
+      const code = url.searchParams.get('code');
       if (code) {
-        resolve(code);
-      } else {
-        reject(new Error(error || 'No authorization code returned'));
+        return code;
       }
-    });
-
-    server.on('error', reject);
-    server.listen(port);
-  });
+    } catch {
+      // not a URL, fall through
+    }
+    const match = value.match(/[?&]code=([^&\s]+)/);
+    if (match) {
+      return decodeURIComponent(match[1]);
+    }
+  }
+  return value;
 }
 
 async function exchangeCode({ clientId, clientSecret, code, redirectUri }) {
@@ -106,11 +96,17 @@ async function main() {
 
     const clientId = await ask(rl, 'OAuth Client ID');
     const clientSecret = await ask(rl, 'OAuth Client Secret');
-    const port = Number(await ask(rl, 'Local callback port', String(DEFAULT_PORT)));
-    const redirectUri = `http://localhost:${port}${CALLBACK_PATH}`;
+    const redirectUri = await ask(rl, 'Redirect URI (must match your app, public HTTPS)', DEFAULT_REDIRECT_URI);
 
     if (!clientId || !clientSecret) {
       throw new Error('Client ID and Client Secret are required.');
+    }
+
+    if (redirectUri.startsWith('http://') || redirectUri.includes('localhost')) {
+      throw new Error(
+        'SmartThings rejects localhost/http redirect URIs (403). Use a public HTTPS URL '
+        + '(e.g. https://httpbin.org/get) and register it on the app first.',
+      );
     }
 
     const authorizeUrl = new URL(AUTHORIZE_URL);
@@ -119,19 +115,25 @@ async function main() {
     authorizeUrl.searchParams.set('scope', SCOPES.join(' '));
     authorizeUrl.searchParams.set('redirect_uri', redirectUri);
 
-    console.log('\nMake sure this exact redirect URI is registered on your OAuth app:');
-    console.log(`  ${redirectUri}\n`);
-    console.log('Open this URL in your browser and approve access:\n');
-    console.log(`  ${authorizeUrl.toString()}\n`);
-    console.log(`Waiting for the SmartThings redirect on port ${port} ...`);
+    console.log('\n1) Open this URL in your browser and approve access:\n');
+    console.log(`   ${authorizeUrl.toString()}\n`);
+    console.log(`2) You will be redirected to ${redirectUri} — copy the "code" value`);
+    console.log('   from the page (or from the browser address bar, after "code=").');
+    console.log('   The code is single-use and expires within a few minutes.\n');
 
-    const code = await waitForCode(port);
+    const codeInput = await ask(rl, 'Paste the authorization code (or the full redirect URL)');
+    const code = parseCode(codeInput);
+    if (!code) {
+      throw new Error('No authorization code provided.');
+    }
+
     const tokens = await exchangeCode({ clientId, clientSecret, code, redirectUri });
 
-    console.log('\nSuccess! Add these to your plugin config (config.schema OAuth fields):\n');
+    console.log('\nSuccess! Add these to your plugin config (OAuth fields):\n');
     console.log(`  "ClientID": "${clientId}",`);
     console.log(`  "ClientSecret": "${clientSecret}",`);
     console.log(`  "RefreshToken": "${tokens.refresh_token}"\n`);
+    console.log('Remove the "AccessToken" (PAT) field and restart Homebridge.');
     console.log('The plugin renews the access token automatically from here on.');
   } catch (error) {
     console.error('\nSetup failed:', error.message);

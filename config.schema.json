@@ -33,7 +33,7 @@
       },
       "RefreshToken": {
         "title": "OAuth Refresh Token",
-        "description": "OAuth mode. Obtained with the one-time setup helper (npx homebridge-samsung-windfree-ac-auth). It is rotated automatically and persisted to disk afterwards.",
+        "description": "OAuth mode. Obtained with the one-time setup helper (bin/oauth-setup.mjs). It is rotated automatically and persisted to disk afterwards.",
         "type": "string"
       },
       "OptionalWindFreeSwitch": {
