@@ -26,28 +26,55 @@ Simplest, but note that **PATs created after 2024-12-30 expire 24 hours after cr
 
 ### Option B — OAuth2 (recommended, renews automatically)
 
-With OAuth the plugin renews the access token on its own, so you never have to regenerate it manually.
+Because a new PAT expires after 24 hours (see Option A), OAuth2 is the only way to keep the plugin authenticated without regenerating a token every day. You create your own OAuth-In app once; the plugin then uses its refresh token to obtain and renew access tokens automatically.
 
-1. Install the [SmartThings CLI](https://github.com/SmartThingsCommunity/smartthings-cli) and create an OAuth-In app:
+#### 1. Create an OAuth-In app (one time)
 
-   ```
-   smartthings apps:create
-   ```
+Install the [SmartThings CLI](https://github.com/SmartThingsCommunity/smartthings-cli), then run:
 
-   Choose **OAuth-In App**, grant the scopes `r:devices:*` and `x:devices:*`, and set the redirect URI to a **public HTTPS URL** — SmartThings rejects `localhost`/`http` redirects with a 403. A convenient choice is `https://httpbin.org/get`, which simply echoes back the authorization code. This yields an **OAuth Client ID** and **Client Secret**.
+```
+smartthings apps:create
+```
 
-   > To change the redirect URI or scopes of an existing app: `smartthings apps:oauth:update <AppId>`.
+- Choose **OAuth-In App** (may be shown as "API-only").
+- Grant the scopes `r:devices:*` and `x:devices:*` (read + control devices).
+- Set the redirect URI to a **public HTTPS URL**. SmartThings rejects `localhost`/`http` redirect URIs with a `403 Forbidden` on the authorize endpoint, so a local callback does not work. A convenient choice is `https://httpbin.org/get`, which simply echoes back the authorization code.
 
-2. Run the one-time setup helper (on a machine with a browser). The script only uses Node built-ins, so you can download and run it directly:
+The command prints an **OAuth Client ID** and **Client Secret** (the secret is shown only once). To edit the redirect URI or scopes of an existing app later: `smartthings apps:oauth:update <AppId>`.
 
-   ```
-   curl -O https://raw.githubusercontent.com/dstmrk/homebridge-samsung-windfree-ac/main/bin/oauth-setup.mjs
-   node oauth-setup.mjs
-   ```
+#### 2. Obtain the refresh token (one time)
 
-   Paste the Client ID/Secret and the same redirect URI when prompted. Open the printed authorization URL, approve access, then copy the `code` value from the redirect page (or the browser address bar) and paste it back into the helper. It prints the `RefreshToken`.
+Do this on a machine with a browser. Pick either method.
 
-3. Put `ClientID`, `ClientSecret` and `RefreshToken` in the config and leave `AccessToken` empty. The refresh token rotates on every use and is persisted to disk automatically.
+**Method A — helper script (recommended).** Download `bin/oauth-setup.mjs` from this repository (it has no dependencies) and run it:
+
+```
+node oauth-setup.mjs
+```
+
+Paste the Client ID/Secret and the redirect URI when prompted, open the printed authorization URL, approve access, then copy the `code` from the redirect page (the `httpbin` JSON, or the browser address bar after `code=`) and paste it back. The script prints the `RefreshToken`.
+
+**Method B — manual.** Open this URL in a browser (replace `CLIENT_ID`; keep the redirect URI identical to the one registered on the app):
+
+```
+https://api.smartthings.com/oauth/authorize?client_id=CLIENT_ID&response_type=code&scope=r:devices:*%20x:devices:*&redirect_uri=https://httpbin.org/get
+```
+
+After approving, copy the `code` from the redirect and exchange it for tokens (the code is single-use and expires within minutes):
+
+```
+curl -s -u "CLIENT_ID:CLIENT_SECRET" \
+  -d grant_type=authorization_code \
+  -d code=THE_CODE \
+  -d "redirect_uri=https://httpbin.org/get" \
+  https://api.smartthings.com/oauth/token
+```
+
+Copy the `refresh_token` from the JSON response.
+
+#### 3. Configure the plugin
+
+Put `ClientID`, `ClientSecret` and `RefreshToken` in the config and leave `AccessToken` empty. The refresh token rotates on every use and the newest one is persisted to disk (in the Homebridge storage directory), so you never need to update it manually.
 
 ## Configuration
 Configuration parameters:
