@@ -34,17 +34,20 @@ With OAuth the plugin renews the access token on its own, so you never have to r
    smartthings apps:create
    ```
 
-   Choose **OAuth-In App**, set the redirect URI to `http://localhost:8000/callback`, and grant the scopes `r:devices:*` and `x:devices:*`. This yields an **OAuth Client ID** and **Client Secret**.
+   Choose **OAuth-In App**, grant the scopes `r:devices:*` and `x:devices:*`, and set the redirect URI to a **public HTTPS URL** — SmartThings rejects `localhost`/`http` redirects with a 403. A convenient choice is `https://httpbin.org/get`, which simply echoes back the authorization code. This yields an **OAuth Client ID** and **Client Secret**.
 
-2. Run the one-time setup helper to obtain the refresh token:
+   > To change the redirect URI or scopes of an existing app: `smartthings apps:oauth:update <AppId>`.
+
+2. Run the one-time setup helper (on a machine with a browser). The script only uses Node built-ins, so you can download and run it directly:
 
    ```
-   npx homebridge-samsung-windfree-ac-auth
+   curl -O https://raw.githubusercontent.com/dstmrk/homebridge-samsung-windfree-ac/main/bin/oauth-setup.mjs
+   node oauth-setup.mjs
    ```
 
-   Paste the Client ID/Secret when prompted, approve access in the browser, and copy the printed `RefreshToken`.
+   Paste the Client ID/Secret and the same redirect URI when prompted. Open the printed authorization URL, approve access, then copy the `code` value from the redirect page (or the browser address bar) and paste it back into the helper. It prints the `RefreshToken`.
 
-3. Put `ClientID`, `ClientSecret` and `RefreshToken` in the config. The refresh token rotates on every use and is persisted to disk automatically.
+3. Put `ClientID`, `ClientSecret` and `RefreshToken` in the config and leave `AccessToken` empty. The refresh token rotates on every use and is persisted to disk automatically.
 
 ## Configuration
 Configuration parameters:
