@@ -16,14 +16,47 @@ This plugin allows you to control your Samsung WindFree AC through Homebridge.
 ## Installation
 Install this plugin using: `hb-service add homebridge-samsung-windfree-ac`
 
+## Authentication
+
+You can authenticate in one of two ways.
+
+### Option A — Personal Access Token (PAT)
+
+Simplest, but note that **PATs created after 2024-12-30 expire 24 hours after creation** and cannot be extended, so you would have to regenerate the token every day. Create one on the [personal access tokens page](https://account.smartthings.com/login?redirect=https%3A%2F%2Faccount.smartthings.com%2Ftokens) (scopes: read/execute devices) and set it as `AccessToken`.
+
+### Option B — OAuth2 (recommended, renews automatically)
+
+With OAuth the plugin renews the access token on its own, so you never have to regenerate it manually.
+
+1. Install the [SmartThings CLI](https://github.com/SmartThingsCommunity/smartthings-cli) and create an OAuth-In app:
+
+   ```
+   smartthings apps:create
+   ```
+
+   Choose **OAuth-In App**, set the redirect URI to `http://localhost:8000/callback`, and grant the scopes `r:devices:*` and `x:devices:*`. This yields an **OAuth Client ID** and **Client Secret**.
+
+2. Run the one-time setup helper to obtain the refresh token:
+
+   ```
+   npx homebridge-samsung-windfree-ac-auth
+   ```
+
+   Paste the Client ID/Secret when prompted, approve access in the browser, and copy the printed `RefreshToken`.
+
+3. Put `ClientID`, `ClientSecret` and `RefreshToken` in the config. The refresh token rotates on every use and is persisted to disk automatically.
+
 ## Configuration
 Configuration parameters:
 
 - `name`: The name of the platform.
 - `BaseURL`: The base URL for the API.
-- `AccessToken`: Your access token. They can be created and managed on the [personal access tokens page.](https://account.smartthings.com/login?redirect=https%3A%2F%2Faccount.smartthings.com%2Ftokens)
+- `AccessToken`: PAT auth (Option A). Leave empty when using OAuth.
+- `ClientID` / `ClientSecret` / `RefreshToken`: OAuth auth (Option B).
+- `OptionalWindFreeSwitch`: expose a switch for WindFree mode.
+- `OptionalDisplaySwitch`: expose a switch for the display light.
 
-Here is a sample configuration:
+Sample configuration (PAT):
 
 ```json
 {
@@ -37,6 +70,31 @@ Here is a sample configuration:
     ]
 }
 ```
+
+Sample configuration (OAuth):
+
+```json
+{
+    "platforms": [
+        {
+            "platform": "Homebridge Samsung WindFree AC",
+            "name": "Samsung WindFree AC",
+            "BaseURL": "https://api.smartthings.com/v1/",
+            "ClientID": "your_oauth_client_id",
+            "ClientSecret": "your_oauth_client_secret",
+            "RefreshToken": "your_oauth_refresh_token"
+        }
+    ]
+}
+```
+
+## Notes on stability
+
+Device status is cached briefly and refreshed on a background poll, so many
+simultaneous HomeKit reads collapse into a single SmartThings request. This
+avoids the API rate limits (HTTP 429) that previously caused `Failed to get
+device status` errors. On an expired/invalid token you will see a clear HTTP
+401 message in the log instead.
 
 ## Supported Modes
 - `off`
