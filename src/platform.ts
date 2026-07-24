@@ -2,12 +2,15 @@ import { API, DynamicPlatformPlugin, Logger, PlatformAccessory, PlatformConfig, 
 
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
 import { AirConditionerPlatformAccessory } from './platformAccessory';
+import { TokenManager } from './tokenManager';
 
 export class HomebridgePlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service = this.api.hap.Service;
   public readonly Characteristic: typeof Characteristic = this.api.hap.Characteristic;
 
   public readonly accessories: PlatformAccessory[] = [];
+
+  public readonly tokenManager: TokenManager;
 
   constructor(
     public readonly log: Logger,
@@ -17,10 +20,20 @@ export class HomebridgePlatform implements DynamicPlatformPlugin {
   ) {
     this.log.debug('Finished initializing platform:', this.config.name);
 
+    this.tokenManager = new TokenManager(this.log, this.config, this.api.user.storagePath());
+
     this.api.on('didFinishLaunching', () => {
       log.debug('Executed didFinishLaunching callback');
       this.discoverDevices();
     });
+  }
+
+  /**
+   * Returns a valid SmartThings bearer token, transparently refreshing it in
+   * OAuth mode. Shared by discovery and every accessory.
+   */
+  getAccessToken(): Promise<string> {
+    return this.tokenManager.getAccessToken();
   }
 
   configureAccessory(accessory: PlatformAccessory) {
@@ -31,7 +44,6 @@ export class HomebridgePlatform implements DynamicPlatformPlugin {
 
   async discoverDevices() {
     const baseURL = this.config.BaseURL;
-    const accessToken = this.config.AccessToken;
 
     if (!baseURL || typeof baseURL !== 'string' || baseURL.trim() === '') {
       this.log.error('BaseURL is missing or empty in config. Plugin will not attempt device discovery.');
@@ -46,8 +58,19 @@ export class HomebridgePlatform implements DynamicPlatformPlugin {
       return;
     }
 
-    if (!accessToken || typeof accessToken !== 'string' || accessToken.trim() === '') {
-      this.log.error('AccessToken is missing or empty in config. Plugin will not attempt device discovery.');
+    if (this.tokenManager.mode === 'none') {
+      this.log.error(
+        'No SmartThings credentials configured. Provide either AccessToken (PAT) or '
+        + 'ClientID + ClientSecret + RefreshToken (OAuth). Plugin will not attempt device discovery.',
+      );
+      return;
+    }
+
+    let accessToken: string;
+    try {
+      accessToken = await this.getAccessToken();
+    } catch (error) {
+      this.log.error('Could not obtain a SmartThings access token:', (error as Error).message);
       return;
     }
 
@@ -65,6 +88,13 @@ export class HomebridgePlatform implements DynamicPlatformPlugin {
 
     if (!response.ok) {
       this.log.error('Failed to get devices from API. Status:', response.status, response.statusText);
+      if (response.status === 401) {
+        this.log.error(
+          'HTTP 401 Unauthorized: the SmartThings token is invalid or expired. '
+          + 'If using a PAT created after 2024-12-30, note it expires 24h after creation — '
+          + 'switch to OAuth to renew automatically.',
+        );
+      }
       return;
     }
 

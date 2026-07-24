@@ -16,9 +16,25 @@
         "default": "https://api.smartthings.com/v1/"
       },
       "AccessToken": {
-        "title": "Access Token",
+        "title": "Personal Access Token (PAT)",
+        "description": "Legacy auth. PATs created after 2024-12-30 expire after 24h. Leave empty and fill the OAuth fields below to renew tokens automatically.",
         "type": "string",
         "default": ""
+      },
+      "ClientID": {
+        "title": "OAuth Client ID",
+        "description": "OAuth mode. Obtained via the SmartThings CLI (smartthings apps:create).",
+        "type": "string"
+      },
+      "ClientSecret": {
+        "title": "OAuth Client Secret",
+        "description": "OAuth mode. Obtained via the SmartThings CLI (smartthings apps:create).",
+        "type": "string"
+      },
+      "RefreshToken": {
+        "title": "OAuth Refresh Token",
+        "description": "OAuth mode. Obtained with the one-time setup helper (bin/oauth-setup.mjs). It is rotated automatically and persisted to disk afterwards.",
+        "type": "string"
       },
       "OptionalWindFreeSwitch": {
         "title": "Expose a switch to enable/disable WindFree mode",
@@ -30,9 +46,8 @@
         "type": "boolean",
         "default": false
       }
-    }
-      ,
-      "required": ["name", "BaseURL", "AccessToken"]
+    },
+    "required": ["name", "BaseURL"]
   },
   "form": null,
   "display": null

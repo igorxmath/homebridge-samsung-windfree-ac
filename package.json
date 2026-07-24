@@ -14,14 +14,18 @@
     "url": "https://github.com/igorxmath/homebridge-samsung-windfree-ac/issues"
   },
   "engines": {
-     "node": "^20 || ^22",
+    "node": "^20 || ^22 || ^24",
     "homebridge": "^1.11.0 || ^2.0.0-beta.0"
   },
   "main": "dist/index.js",
+  "bin": {
+    "homebridge-samsung-windfree-ac-auth": "bin/oauth-setup.mjs"
+  },
   "scripts": {
     "lint": "eslint src/**.ts --max-warnings=0",
     "watch": "npm run build && npm link && nodemon",
     "build": "rimraf ./dist && tsc",
+    "prepare": "npm run build",
     "prepublishOnly": "npm run lint && npm run build"
   },
   "keywords": [
