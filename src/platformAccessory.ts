@@ -48,6 +48,9 @@ export class AirConditionerPlatformAccessory {
   private service: Service;
   private windFreeSwitchService?: Service;
   private displaySwitchService?: Service;
+  // Optimistic display state, used as a fallback for units that do not report
+  // the lighting capability. Updated whenever a real state is read or set.
+  private displayState = true;
 
   private temperatureUnit: TemperatureUnit = TemperatureUnit.Celsius;
 
@@ -205,7 +208,9 @@ export class AirConditionerPlatformAccessory {
     this.platform.log.debug('Triggered GET DisplaySwitch');
 
     const status = await this.requireStatus();
-    return this.expect(this.computeDisplay(status));
+    // Units that report the lighting capability give the real state; the rest
+    // don't report display state at all, so fall back to the last state we set.
+    return this.computeDisplay(status) ?? this.displayState;
   }
 
   private async handleDisplaySwitchSet(value: CharacteristicValue) {
@@ -226,6 +231,7 @@ export class AirConditionerPlatformAccessory {
     if (!ok) {
       this.platform.log.error('Failed to set DisplaySwitch');
     } else {
+      this.displayState = value as boolean;
       this.scheduleRefresh();
     }
   }
@@ -488,6 +494,7 @@ export class AirConditionerPlatformAccessory {
     if (this.displaySwitchService) {
       const display = this.computeDisplay(status);
       if (display !== undefined) {
+        this.displayState = display as boolean;
         this.displaySwitchService.updateCharacteristic(chr.On, display);
       }
     }
