@@ -42,6 +42,7 @@ export class TokenManager {
   private expiresAt = 0;
 
   private loaded = false;
+  private loadPromise: Promise<void> | null = null;
   private refreshPromise: Promise<string> | null = null;
 
   constructor(
@@ -178,6 +179,11 @@ export class TokenManager {
     this.accessToken = data.access_token;
     this.expiresAt = Date.now() + (data.expires_in ?? DEFAULT_EXPIRES_IN_S) * 1000;
 
+    // We now hold the newest credentials, so nothing on disk can improve on
+    // them. Mark the load as done to stop a retried read (see loadPersisted)
+    // from overwriting them with an older snapshot.
+    this.loaded = true;
+
     // Refresh tokens rotate: persist the new one so it survives restarts.
     if (data.refresh_token && data.refresh_token !== this.refreshToken) {
       this.refreshToken = data.refresh_token;
@@ -190,32 +196,84 @@ export class TokenManager {
     return this.accessToken;
   }
 
+  /**
+   * Loads the persisted tokens once. The on-disk refresh token is the only copy
+   * of the current (rotated) credential, so a failed read must not be treated as
+   * "there is nothing stored" — that would silently fall back to the config
+   * value, which SmartThings already invalidated on the first rotation.
+   *
+   * Transient I/O errors therefore leave the manager unloaded so the next call
+   * retries. Only a successful read, a missing file, or unparseable content
+   * (which no amount of retrying will fix) mark the load as done.
+   */
   private async loadPersisted(): Promise<void> {
     if (this.loaded) {
       return;
     }
-    this.loaded = true;
+    // Coalesce concurrent loads into a single read.
+    if (!this.loadPromise) {
+      this.loadPromise = this.doLoadPersisted().finally(() => {
+        this.loadPromise = null;
+      });
+    }
+    return this.loadPromise;
+  }
 
+  private async doLoadPersisted(): Promise<void> {
+    let raw: string;
     try {
-      const raw = await fs.readFile(this.persistPath, 'utf8');
-      const persisted = JSON.parse(raw) as PersistedTokens;
-
-      // A persisted (rotated) refresh token always beats the stale config value.
-      if (persisted.refreshToken) {
-        this.refreshToken = persisted.refreshToken;
-      }
-      if (persisted.accessToken && persisted.expiresAt) {
-        this.accessToken = persisted.accessToken;
-        this.expiresAt = persisted.expiresAt;
-      }
+      raw = await fs.readFile(this.persistPath, 'utf8');
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      if (code !== 'ENOENT') {
-        this.log.warn('Could not read persisted OAuth tokens:', (error as Error).message);
+      if (code === 'ENOENT') {
+        // Nothing persisted yet: the config value is the right starting point.
+        this.loaded = true;
+        return;
       }
+      // Could be transient (EACCES during a permissions fix, EIO, ...). Keep the
+      // manager unloaded so a later call can still recover the stored token.
+      this.log.error(
+        `Could not read persisted OAuth tokens from ${this.persistPath}: ${(error as Error).message}. `
+        + 'Falling back to the RefreshToken from config for now; this will fail with invalid_grant if the '
+        + 'token has already rotated. Fix the file permissions and the stored token will be picked up again.',
+      );
+      return;
+    }
+
+    let persisted: PersistedTokens;
+    try {
+      persisted = JSON.parse(raw) as PersistedTokens;
+    } catch (error) {
+      // Unparseable content will not repair itself, so stop retrying — but be
+      // loud, because the stored refresh token is unrecoverable from here.
+      this.loaded = true;
+      this.log.error(
+        `Persisted OAuth token file ${this.persistPath} is corrupt (${(error as Error).message}). `
+        + 'Falling back to the RefreshToken from config; if that fails with invalid_grant, delete the file '
+        + 'and re-run the OAuth setup helper.',
+      );
+      return;
+    }
+
+    this.loaded = true;
+
+    // A persisted (rotated) refresh token always beats the stale config value.
+    if (persisted.refreshToken) {
+      this.refreshToken = persisted.refreshToken;
+    }
+    if (persisted.accessToken && persisted.expiresAt) {
+      this.accessToken = persisted.accessToken;
+      this.expiresAt = persisted.expiresAt;
     }
   }
 
+  /**
+   * Writes the tokens to disk atomically (temp file + fsync + rename) so a crash
+   * or a full disk can never leave a half-written file behind. This file holds
+   * the only valid refresh token after the first rotation, so a failure here is
+   * an error, not a warning: the plugin keeps working until the next restart and
+   * then cannot authenticate at all.
+   */
   private async persist(): Promise<void> {
     const data: PersistedTokens = {
       refreshToken: this.refreshToken,
@@ -223,10 +281,24 @@ export class TokenManager {
       expiresAt: this.expiresAt,
     };
 
+    const tmpPath = `${this.persistPath}.${process.pid}.tmp`;
+
     try {
-      await fs.writeFile(this.persistPath, JSON.stringify(data), { encoding: 'utf8', mode: 0o600 });
+      const handle = await fs.open(tmpPath, 'w', 0o600);
+      try {
+        await handle.writeFile(JSON.stringify(data), 'utf8');
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      await fs.rename(tmpPath, this.persistPath);
     } catch (error) {
-      this.log.warn('Could not persist OAuth tokens to disk:', (error as Error).message);
+      this.log.error(
+        `Could not persist OAuth tokens to ${this.persistPath}: ${(error as Error).message}. `
+        + 'The rotated refresh token exists only in memory — if Homebridge restarts before this succeeds, '
+        + 'you will have to re-run the OAuth setup helper to obtain a new RefreshToken.',
+      );
+      await fs.rm(tmpPath, { force: true }).catch(() => { /* best effort */ });
     }
   }
 }
