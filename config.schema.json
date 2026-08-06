@@ -45,6 +45,11 @@
         "title": "Expose a switch to turn on/off the display light",
         "type": "boolean",
         "default": false
+      },
+      "OptionalSwingDirectionSwitches": {
+        "title": "Expose switches to set vertical/horizontal swing direction",
+        "type": "boolean",
+        "default": false
       }
     },
     "required": ["name", "BaseURL"]

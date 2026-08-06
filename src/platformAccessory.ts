@@ -30,6 +30,12 @@ enum AirConditionerDisplayState {
   Off = 'Light_On'
 }
 
+enum OscillationMode {
+  Fixed = 'fixed',
+  Vertical = 'vertical',
+  Horizontal = 'horizontal'
+}
+
 type DeviceStatus = Record<string, any>;
 
 // Serve cached status for this long before hitting the API again. A single read
@@ -48,6 +54,8 @@ export class AirConditionerPlatformAccessory {
   private service: Service;
   private windFreeSwitchService?: Service;
   private displaySwitchService?: Service;
+  private swingVerticalService?: Service;
+  private swingHorizontalService?: Service;
 
   private temperatureUnit: TemperatureUnit = TemperatureUnit.Celsius;
 
@@ -151,6 +159,25 @@ export class AirConditionerPlatformAccessory {
       }
     }
 
+    this.platform.log.debug('Optional Swing Direction Switches: ', this.platform.config.OptionalSwingDirectionSwitches);
+    if (this.platform.config.OptionalSwingDirectionSwitches) {
+      this.platform.log.debug('Adding Swing Direction Switches');
+
+      this.swingVerticalService = this.setupSwingDirectionSwitch(
+        'Swing Vertical', `swing-vertical-${accessory.context.device.deviceId}`, OscillationMode.Vertical);
+      this.swingHorizontalService = this.setupSwingDirectionSwitch(
+        'Swing Horizontal', `swing-horizontal-${accessory.context.device.deviceId}`, OscillationMode.Horizontal);
+    } else {
+      for (const name of ['Swing Vertical', 'Swing Horizontal']) {
+        const service = this.accessory.getService(name);
+        if (service) {
+          this.platform.log.debug(`Removing ${name}`);
+
+          this.accessory.removeService(service);
+        }
+      }
+    }
+
     // Warm the cache and start pushing state changes to HomeKit so values stay
     // fresh without every characteristic read hitting the API. Skipped when no
     // credentials are configured, to avoid spamming errors on cached accessories.
@@ -166,6 +193,37 @@ export class AirConditionerPlatformAccessory {
         }
       });
     }
+  }
+
+  private setupSwingDirectionSwitch(name: string, subtype: string, mode: OscillationMode): Service {
+    const service =
+      this.accessory.getService(name) ||
+      this.accessory.addService(this.platform.Service.Switch, name, subtype);
+
+    service.setCharacteristic(this.platform.Characteristic.Name, name);
+
+    service.getCharacteristic(this.platform.Characteristic.On)
+      .onGet(async () => {
+        const status = await this.requireStatus();
+        return this.computeOscillation(status) === mode;
+      })
+      .onSet(async (value) => {
+        const ok = await this.sendCommands([
+          {
+            capability: 'fanOscillationMode',
+            command: 'setFanOscillationMode',
+            arguments: [value ? mode : OscillationMode.Fixed],
+          },
+        ]);
+
+        if (!ok) {
+          this.platform.log.error(`Failed to set ${name}`);
+        } else {
+          this.scheduleRefresh();
+        }
+      });
+
+    return service;
   }
 
   private async handleWindFreeSwitchGet(): Promise<CharacteristicValue> {
@@ -423,6 +481,10 @@ export class AirConditionerPlatformAccessory {
     return displaySwitchStatus === SwitchState.On;
   }
 
+  private computeOscillation(status: DeviceStatus): OscillationMode {
+    return (this.readAttr(status, 'fanOscillationMode', 'fanOscillationMode') as OscillationMode) ?? OscillationMode.Fixed;
+  }
+
   // ---------------------------------------------------------------------------
   // Status fetching, caching and pushing
   // ---------------------------------------------------------------------------
@@ -490,6 +552,13 @@ export class AirConditionerPlatformAccessory {
       if (display !== undefined) {
         this.displaySwitchService.updateCharacteristic(chr.On, display);
       }
+    }
+
+    if ((this.swingVerticalService || this.swingHorizontalService) &&
+        this.readAttr(status, 'fanOscillationMode', 'fanOscillationMode') !== undefined) {
+      const mode = this.computeOscillation(status);
+      this.swingVerticalService?.updateCharacteristic(chr.On, mode === OscillationMode.Vertical);
+      this.swingHorizontalService?.updateCharacteristic(chr.On, mode === OscillationMode.Horizontal);
     }
   }
 
