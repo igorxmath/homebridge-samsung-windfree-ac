@@ -30,6 +30,19 @@ enum AirConditionerDisplayState {
   Off = 'Light_On'
 }
 
+enum FanMode {
+  Auto = 'auto',
+  Low = 'low',
+  Medium = 'medium',
+  High = 'high',
+  Turbo = 'turbo'
+}
+
+enum OscillationMode {
+  Fixed = 'fixed',
+  All = 'all'
+}
+
 type DeviceStatus = Record<string, any>;
 
 // Serve cached status for this long before hitting the API again. A single read
@@ -48,6 +61,7 @@ export class AirConditionerPlatformAccessory {
   private service: Service;
   private windFreeSwitchService?: Service;
   private displaySwitchService?: Service;
+  private fanService?: Service;
 
   private temperatureUnit: TemperatureUnit = TemperatureUnit.Celsius;
 
@@ -151,6 +165,44 @@ export class AirConditionerPlatformAccessory {
       }
     }
 
+    this.platform.log.debug('Optional Fan Control: ', this.platform.config.OptionalFanControl);
+    if (this.platform.config.OptionalFanControl) {
+      this.platform.log.debug('Adding Fan Control');
+
+      this.fanService =
+      this.accessory.getService('Fan') ||
+      this.accessory.addService(this.platform.Service.Fanv2, 'Fan', `fan-${accessory.context.device.deviceId}`);
+
+      this.fanService.setCharacteristic(this.platform.Characteristic.Name, 'Fan');
+
+      this.fanService.getCharacteristic(this.platform.Characteristic.Active)
+        .onGet(this.handleFanActiveGet.bind(this))
+        .onSet(this.handleFanActiveSet.bind(this));
+
+      this.fanService.getCharacteristic(this.platform.Characteristic.CurrentFanState)
+        .onGet(this.handleCurrentFanStateGet.bind(this));
+
+      this.fanService.getCharacteristic(this.platform.Characteristic.TargetFanState)
+        .onGet(this.handleTargetFanStateGet.bind(this))
+        .onSet(this.handleTargetFanStateSet.bind(this));
+
+      this.fanService.getCharacteristic(this.platform.Characteristic.RotationSpeed)
+        .setProps({ minValue: 0, maxValue: 100, minStep: 25 })
+        .onGet(this.handleRotationSpeedGet.bind(this))
+        .onSet(this.handleRotationSpeedSet.bind(this));
+
+      this.fanService.getCharacteristic(this.platform.Characteristic.SwingMode)
+        .onGet(this.handleSwingModeGet.bind(this))
+        .onSet(this.handleSwingModeSet.bind(this));
+    } else {
+      const fanService = this.accessory.getService('Fan');
+      if (fanService) {
+        this.platform.log.debug('Removing Fan Control');
+
+        this.accessory.removeService(fanService);
+      }
+    }
+
     // Warm the cache and start pushing state changes to HomeKit so values stay
     // fresh without every characteristic read hitting the API. Skipped when no
     // credentials are configured, to avoid spamming errors on cached accessories.
@@ -225,6 +277,132 @@ export class AirConditionerPlatformAccessory {
 
     if (!ok) {
       this.platform.log.error('Failed to set DisplaySwitch');
+    } else {
+      this.scheduleRefresh();
+    }
+  }
+
+  private async handleFanActiveGet(): Promise<CharacteristicValue> {
+    this.platform.log.debug('Triggered GET Fan Active');
+
+    const status = await this.requireStatus();
+    return this.expect(this.computeActive(status));
+  }
+
+  private async handleFanActiveSet(value: CharacteristicValue) {
+    this.platform.log.debug('Triggered SET Fan Active:', value);
+
+    const on = value === this.platform.Characteristic.Active.ACTIVE;
+    const ok = await this.sendCommands([
+      {
+        capability: 'switch',
+        command: on ? SwitchState.On : SwitchState.Off,
+      },
+    ]);
+
+    if (!ok) {
+      this.platform.log.error('Failed to set Fan Active');
+    } else {
+      this.scheduleRefresh();
+    }
+  }
+
+  private async handleCurrentFanStateGet(): Promise<CharacteristicValue> {
+    this.platform.log.debug('Triggered GET CurrentFanState');
+
+    const status = await this.requireStatus();
+    return this.expect(this.computeCurrentFanState(status));
+  }
+
+  private async handleTargetFanStateGet(): Promise<CharacteristicValue> {
+    this.platform.log.debug('Triggered GET TargetFanState');
+
+    const status = await this.requireStatus();
+    return this.computeTargetFanState(status);
+  }
+
+  private async handleTargetFanStateSet(value: CharacteristicValue) {
+    this.platform.log.debug('Triggered SET TargetFanState:', value);
+
+    const auto = value === this.platform.Characteristic.TargetFanState.AUTO;
+    if (auto) {
+      await this.setFanMode(FanMode.Auto);
+      return;
+    }
+
+    // Manual: if the unit was in auto, start from a sensible fixed speed.
+    const status = await this.getDeviceStatus();
+    if (this.computeFanMode(status) === FanMode.Auto) {
+      await this.setFanMode(FanMode.Medium);
+    }
+  }
+
+  private async handleRotationSpeedGet(): Promise<CharacteristicValue> {
+    this.platform.log.debug('Triggered GET RotationSpeed');
+
+    const status = await this.requireStatus();
+    return this.fanModeToPercent(this.computeFanMode(status));
+  }
+
+  private async handleRotationSpeedSet(value: CharacteristicValue) {
+    this.platform.log.debug('Triggered SET RotationSpeed:', value);
+
+    const percent = value as number;
+    if (percent <= 0) {
+      // Slider at zero turns the unit off.
+      const ok = await this.sendCommands([{ capability: 'switch', command: SwitchState.Off }]);
+      if (!ok) {
+        this.platform.log.error('Failed to set RotationSpeed');
+      } else {
+        this.scheduleRefresh();
+      }
+      return;
+    }
+
+    await this.setFanMode(this.percentToFanMode(percent));
+  }
+
+  private async handleSwingModeGet(): Promise<CharacteristicValue> {
+    this.platform.log.debug('Triggered GET SwingMode');
+
+    const status = await this.requireStatus();
+    return this.expect(this.computeSwingMode(status));
+  }
+
+  private async handleSwingModeSet(value: CharacteristicValue) {
+    this.platform.log.debug('Triggered SET SwingMode:', value);
+
+    const enabled = value === this.platform.Characteristic.SwingMode.SWING_ENABLED;
+    await this.setOscillationMode(enabled ? OscillationMode.All : OscillationMode.Fixed);
+  }
+
+  private async setFanMode(mode: FanMode): Promise<void> {
+    const ok = await this.sendCommands([
+      {
+        capability: 'airConditionerFanMode',
+        command: 'setFanMode',
+        arguments: [mode],
+      },
+    ]);
+
+    if (!ok) {
+      this.platform.log.error('Failed to set FanMode');
+    } else {
+      this.scheduleRefresh();
+    }
+  }
+
+  private async setOscillationMode(mode: OscillationMode): Promise<void> {
+    const ok = await this.sendCommands([
+      {
+        capability: 'fanOscillationMode',
+        command: 'setFanOscillationMode',
+        arguments: [mode],
+      },
+    ]);
+
+    if (!ok) {
+      this.platform.log.error('Failed to set FanOscillationMode');
     } else {
       this.scheduleRefresh();
     }
@@ -423,6 +601,72 @@ export class AirConditionerPlatformAccessory {
     return displaySwitchStatus === SwitchState.On;
   }
 
+  private computeActive(status: DeviceStatus): CharacteristicValue | undefined {
+    const switchStatus = this.readAttr(status, 'switch', 'switch') as SwitchState | undefined;
+
+    if (switchStatus === undefined) {
+      return undefined;
+    }
+
+    const active = this.platform.Characteristic.Active;
+    return switchStatus === SwitchState.On ? active.ACTIVE : active.INACTIVE;
+  }
+
+  private computeCurrentFanState(status: DeviceStatus): CharacteristicValue | undefined {
+    const switchStatus = this.readAttr(status, 'switch', 'switch') as SwitchState | undefined;
+
+    if (switchStatus === undefined) {
+      return undefined;
+    }
+
+    const currentFanState = this.platform.Characteristic.CurrentFanState;
+    return switchStatus === SwitchState.On ? currentFanState.BLOWING_AIR : currentFanState.INACTIVE;
+  }
+
+  private computeFanMode(status: DeviceStatus | null): FanMode {
+    return (this.readAttr(status, 'airConditionerFanMode', 'fanMode') as FanMode) ?? FanMode.Auto;
+  }
+
+  private computeTargetFanState(status: DeviceStatus): CharacteristicValue {
+    const targetFanState = this.platform.Characteristic.TargetFanState;
+    return this.computeFanMode(status) === FanMode.Auto ? targetFanState.AUTO : targetFanState.MANUAL;
+  }
+
+  private computeSwingMode(status: DeviceStatus): CharacteristicValue | undefined {
+    const mode = this.readAttr(status, 'fanOscillationMode', 'fanOscillationMode') as OscillationMode | undefined;
+
+    if (mode === undefined) {
+      return undefined;
+    }
+
+    const swingMode = this.platform.Characteristic.SwingMode;
+    return mode === OscillationMode.Fixed ? swingMode.SWING_DISABLED : swingMode.SWING_ENABLED;
+  }
+
+  private fanModeToPercent(fanMode: FanMode): number {
+    switch (fanMode) {
+      case FanMode.Low: return 25;
+      case FanMode.Medium: return 50;
+      case FanMode.High: return 75;
+      case FanMode.Turbo: return 100;
+      // Auto has no fixed speed; TargetFanState reports the auto mode instead.
+      default: return 50;
+    }
+  }
+
+  private percentToFanMode(percent: number): FanMode {
+    if (percent <= 25) {
+      return FanMode.Low;
+    }
+    if (percent <= 50) {
+      return FanMode.Medium;
+    }
+    if (percent <= 75) {
+      return FanMode.High;
+    }
+    return FanMode.Turbo;
+  }
+
   // ---------------------------------------------------------------------------
   // Status fetching, caching and pushing
   // ---------------------------------------------------------------------------
@@ -489,6 +733,28 @@ export class AirConditionerPlatformAccessory {
       const display = this.computeDisplay(status);
       if (display !== undefined) {
         this.displaySwitchService.updateCharacteristic(chr.On, display);
+      }
+    }
+
+    if (this.fanService) {
+      const active = this.computeActive(status);
+      if (active !== undefined) {
+        this.fanService.updateCharacteristic(chr.Active, active);
+      }
+
+      const currentFanState = this.computeCurrentFanState(status);
+      if (currentFanState !== undefined) {
+        this.fanService.updateCharacteristic(chr.CurrentFanState, currentFanState);
+      }
+
+      if (this.readAttr(status, 'airConditionerFanMode', 'fanMode') !== undefined) {
+        this.fanService.updateCharacteristic(chr.TargetFanState, this.computeTargetFanState(status));
+        this.fanService.updateCharacteristic(chr.RotationSpeed, this.fanModeToPercent(this.computeFanMode(status)));
+      }
+
+      const swingMode = this.computeSwingMode(status);
+      if (swingMode !== undefined) {
+        this.fanService.updateCharacteristic(chr.SwingMode, swingMode);
       }
     }
   }
