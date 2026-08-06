@@ -86,6 +86,7 @@ Configuration parameters:
 - `OptionalWindFreeSwitch`: expose a switch for WindFree mode.
 - `OptionalDisplaySwitch`: expose a switch for the display light.
 - `IgnoredDevices`: list of SmartThings device IDs or names to hide from HomeKit.
+- `OptionalDryModeSwitch`: expose a switch for dry (dehumidify) mode.
 - `OptionalHumiditySensor`: expose the indoor relative humidity as a separate sensor.
 - `OptionalFanControl`: expose a fan with speed, auto/manual and swing on/off.
 - `OptionalSwingDirectionSwitches`: expose switches for vertical/horizontal swing direction.
@@ -170,7 +171,14 @@ device status` errors. On an expired/invalid token you will see a clear HTTP
 ## Supported Optional Modes
 - `windFree`
 > To enable this mode, you need to select the `windFree` option in the plugin settings.
+- `dry`
+> HomeKit thermostats only understand off/cool/heat/auto, so dry mode is exposed as a separate
+> switch instead (enable `OptionalDryModeSwitch`). Turning it on puts the unit into dry mode,
+> powering it on first if needed; turning it off returns the unit to the mode it was in before —
+> including a mode you selected from the remote or the SmartThings app. While the unit is drying,
+> the thermostat tile itself reads as off, since HomeKit has no state to show for it.
 
 ## Roadmap
 - [x] Add support for `windFree` mode.
+- [x] Add support for `dry` mode.
 - [ ] Add automated tests and CI/CD.

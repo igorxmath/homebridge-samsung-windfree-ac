@@ -88,6 +88,7 @@ export class AirConditionerPlatformAccessory {
   private windFreeSwitchService?: Service;
   private displaySwitchService?: Service;
   private humiditySensorService?: Service;
+  private dryModeSwitchService?: Service;
   private fanService?: Service;
   private swingVerticalService?: Service;
   private swingHorizontalService?: Service;
@@ -106,6 +107,11 @@ export class AirConditionerPlatformAccessory {
   // RotationSpeed slider something meaningful to show while in Auto and to pick
   // a speed when HomeKit switches the fan back to manual.
   private lastManualFanMode: FanMode = FanMode.Medium;
+
+  // Mode to go back to when the dry switch is turned off. HomeKit has no "dry"
+  // target state, so the switch has to restore whatever the unit was doing
+  // before. Tracks the last non-dry mode seen on the unit.
+  private modeBeforeDry: AirConditionerMode = AirConditionerMode.Cool;
 
   private cachedStatus: DeviceStatus | null = null;
   private statusFetchedAt = 0;
@@ -305,6 +311,28 @@ export class AirConditionerPlatformAccessory {
       this.removeServiceByName('Auto Clean');
     }
 
+    this.platform.log.debug('Optional Dry Mode Switch: ', this.platform.config.OptionalDryModeSwitch);
+    if (this.platform.config.OptionalDryModeSwitch) {
+      this.platform.log.debug('Adding Dry Mode Switch');
+
+      this.dryModeSwitchService =
+      this.accessory.getService('Dry') ||
+      this.accessory.addService(this.platform.Service.Switch, 'Dry', `dry-${accessory.context.device.deviceId}`);
+
+      this.dryModeSwitchService.setCharacteristic(this.platform.Characteristic.Name, 'Dry');
+
+      this.dryModeSwitchService.getCharacteristic(this.platform.Characteristic.On)
+        .onGet(this.handleDryModeSwitchGet.bind(this))
+        .onSet(this.handleDryModeSwitchSet.bind(this));
+    } else {
+      const dryModeSwitchService = this.accessory.getService('Dry');
+      if (dryModeSwitchService) {
+        this.platform.log.debug('Removing Dry Mode Switch');
+
+        this.accessory.removeService(dryModeSwitchService);
+      }
+    }
+
     // Warm the cache and start pushing state changes to HomeKit so values stay
     // fresh without every characteristic read hitting the API. Skipped when no
     // credentials are configured, to avoid spamming errors on cached accessories.
@@ -424,6 +452,68 @@ export class AirConditionerPlatformAccessory {
         arguments: value ? [AirConditionerOptionalMode.WindFree] : [AirConditionerOptionalMode.Off],
       },
     ]);
+  }
+
+  private async handleDryModeSwitchGet(): Promise<CharacteristicValue> {
+    this.platform.log.debug('Triggered GET DryModeSwitch');
+
+    const status = await this.requireStatus();
+    return this.expect(this.computeDryMode(status));
+  }
+
+  private async handleDryModeSwitchSet(value: CharacteristicValue) {
+    this.platform.log.debug('Triggered SET DryModeSwitch:', value);
+
+    // Every decision below is relative to the mode the unit is in now, so it
+    // must not rest on a possibly stale cache.
+    const status = await this.requireFreshStatus('DryModeSwitch');
+
+    const airConditionerMode = this.readAttr(status, 'airConditionerMode', 'airConditionerMode') as AirConditionerMode | undefined;
+
+    // Acting on an unknown mode would either strand the unit in dry or knock it
+    // out of the mode the user actually chose.
+    if (airConditionerMode === undefined) {
+      this.platform.log.error('Cannot set DryModeSwitch: the current mode is unknown');
+      throw new this.platform.api.hap.HapStatusError(this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+    }
+
+    const targetMode = value ? AirConditionerMode.Dry : this.modeBeforeDry;
+
+    if (airConditionerMode === targetMode) {
+      this.platform.log.debug('Dry mode is already', value ? 'on' : 'off');
+      return;
+    }
+
+    // Turning the switch off only means anything while the unit is drying.
+    if (!value && airConditionerMode !== AirConditionerMode.Dry) {
+      this.platform.log.debug('Unit is not in dry mode; leaving the mode alone');
+      return;
+    }
+
+    const supportedModes = this.readAttr(status, 'airConditionerMode', 'supportedAcModes');
+    if (Array.isArray(supportedModes) && !supportedModes.includes(targetMode)) {
+      this.rejectRequest(`${this.name} does not support the ${targetMode} mode; ignoring the requested change.`, status);
+    }
+
+    if (value) {
+      this.modeBeforeDry = airConditionerMode;
+    }
+
+    const commands: unknown[] = [];
+
+    // Dry mode on a powered-off unit has to power it on, otherwise the command
+    // is accepted and nothing happens.
+    if (value && this.readAttr(status, 'switch', 'switch') !== SwitchState.On) {
+      commands.push({ capability: 'switch', command: SwitchState.On });
+    }
+
+    commands.push({
+      capability: 'airConditionerMode',
+      command: 'setAirConditionerMode',
+      arguments: [targetMode],
+    });
+
+    await this.runCommands('DryModeSwitch', commands);
   }
 
   private async handleDisplaySwitchGet(): Promise<CharacteristicValue> {
@@ -871,6 +961,16 @@ export class AirConditionerPlatformAccessory {
     return windFreeSwitchStatus === AirConditionerOptionalMode.WindFree;
   }
 
+  private computeDryMode(status: DeviceStatus): CharacteristicValue | undefined {
+    const airConditionerMode = this.readAttr(status, 'airConditionerMode', 'airConditionerMode') as AirConditionerMode | undefined;
+
+    if (airConditionerMode === undefined) {
+      return undefined;
+    }
+
+    return airConditionerMode === AirConditionerMode.Dry;
+  }
+
   private computeDisplay(status: DeviceStatus): CharacteristicValue | undefined {
     const displaySwitchStatus = this.readAttr(status, LIGHTING_CAPABILITY, 'lighting') as SwitchState | undefined;
 
@@ -1164,6 +1264,20 @@ export class AirConditionerPlatformAccessory {
       const horizontal = this.computeSwingDirection(status, OscillationMode.Horizontal);
       if (horizontal !== undefined) {
         this.swingHorizontalService.updateCharacteristic(chr.On, horizontal);
+      }
+    }
+
+    // Remember where to put the unit back when dry mode is switched off, even
+    // when the mode was changed from the remote or the SmartThings app.
+    const airConditionerMode = this.readAttr(status, 'airConditionerMode', 'airConditionerMode') as AirConditionerMode | undefined;
+    if (airConditionerMode !== undefined && airConditionerMode !== AirConditionerMode.Dry) {
+      this.modeBeforeDry = airConditionerMode;
+    }
+
+    if (this.dryModeSwitchService) {
+      const dryMode = this.computeDryMode(status);
+      if (dryMode !== undefined) {
+        this.dryModeSwitchService.updateCharacteristic(chr.On, dryMode);
       }
     }
   }
