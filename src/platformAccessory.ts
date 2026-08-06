@@ -44,6 +44,18 @@ const POLL_INTERVAL_MS = 15000;
 // refresh and push the resulting state.
 const REFRESH_AFTER_SET_MS = 1500;
 
+// How long to stop issuing status requests after SmartThings answers with a 429.
+// Used only when the response carries no usable Retry-After header.
+const RATE_LIMIT_BACKOFF_MS = 60000;
+
+// Upper bound on a server-supplied Retry-After, so a bogus value cannot wedge
+// the plugin for hours.
+const MAX_BACKOFF_MS = 15 * 60 * 1000;
+
+// Shorter pause after any other failed read, so a broken API or an expired
+// token does not turn the poll timer into a request flood.
+const ERROR_BACKOFF_MS = 30000;
+
 export class AirConditionerPlatformAccessory {
   private service: Service;
   private windFreeSwitchService?: Service;
@@ -54,7 +66,9 @@ export class AirConditionerPlatformAccessory {
   private cachedStatus: DeviceStatus | null = null;
   private statusFetchedAt = 0;
   private inFlightStatus: Promise<DeviceStatus | null> | null = null;
+  private backoffUntil = 0;
   private pollTimer?: NodeJS.Timeout;
+  private refreshTimer?: NodeJS.Timeout;
 
   public static readonly supportedCapabilities =
     [
@@ -160,9 +174,14 @@ export class AirConditionerPlatformAccessory {
         this.refreshAndPush().catch(() => { /* logged in fetch */ });
       }, POLL_INTERVAL_MS);
 
-      this.platform.api.on('shutdown', () => {
+      this.platform.onShutdown(() => {
         if (this.pollTimer) {
           clearInterval(this.pollTimer);
+          this.pollTimer = undefined;
+        }
+        if (this.refreshTimer) {
+          clearTimeout(this.refreshTimer);
+          this.refreshTimer = undefined;
         }
       });
     }
@@ -178,27 +197,33 @@ export class AirConditionerPlatformAccessory {
   private async handleWindFreeSwitchSet(value: CharacteristicValue) {
     this.platform.log.debug('Triggered SET WindFreeSwitch:', value);
 
-    const status = await this.getDeviceStatus();
+    // The decision below rejects the user's request, so it must not rest on a
+    // cache that can be seconds stale (or, after a failed read, arbitrarily
+    // old). Force a fresh read of the current mode.
+    const status = await this.getDeviceStatus(true);
+
+    if (!status) {
+      this.platform.log.error('Cannot set WindFreeSwitch: device status is unavailable');
+      throw new this.platform.api.hap.HapStatusError(this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+    }
+
     const airConditionerMode = this.readAttr(status, 'airConditionerMode', 'airConditionerMode') as AirConditionerMode | undefined;
 
     if (airConditionerMode === AirConditionerMode.Auto) {
-      this.platform.log.debug('WindFreeSwitch is not supported in Auto mode');
-      return;
+      // Report the rejection instead of silently dropping it: HomeKit would
+      // otherwise keep showing a switch position the AC never accepted.
+      this.platform.log.warn('WindFree is not supported in Auto mode; ignoring the requested change.');
+      this.pushStatus(status);
+      throw new this.platform.api.hap.HapStatusError(this.platform.api.hap.HAPStatus.NOT_ALLOWED_IN_CURRENT_STATE);
     }
 
-    const ok = await this.sendCommands([
+    await this.runCommands('WindFreeSwitch', [
       {
         capability: 'custom.airConditionerOptionalMode',
         command: 'setAcOptionalMode',
         arguments: value ? [AirConditionerOptionalMode.WindFree] : [AirConditionerOptionalMode.Off],
       },
     ]);
-
-    if (!ok) {
-      this.platform.log.error('Failed to set WindFreeSwitch');
-    } else {
-      this.scheduleRefresh();
-    }
   }
 
   private async handleDisplaySwitchGet(): Promise<CharacteristicValue> {
@@ -211,7 +236,7 @@ export class AirConditionerPlatformAccessory {
   private async handleDisplaySwitchSet(value: CharacteristicValue) {
     this.platform.log.debug('Triggered SET DisplaySwitch:', value);
 
-    const ok = await this.sendCommands([
+    await this.runCommands('DisplaySwitch', [
       {
         capability: 'execute',
         command: 'execute',
@@ -222,12 +247,6 @@ export class AirConditionerPlatformAccessory {
         }],
       },
     ]);
-
-    if (!ok) {
-      this.platform.log.error('Failed to set DisplaySwitch');
-    } else {
-      this.scheduleRefresh();
-    }
   }
 
   private handleTemperatureDisplayUnitsGet(): CharacteristicValue {
@@ -289,13 +308,7 @@ export class AirConditionerPlatformAccessory {
       },
     ];
 
-    const ok = await this.sendCommands(commands);
-
-    if (!ok) {
-      this.platform.log.error('Failed to set TargetHeatingCoolingState');
-    } else {
-      this.scheduleRefresh();
-    }
+    await this.runCommands('TargetHeatingCoolingState', commands);
   }
 
   private async handleCurrentTemperatureGet(): Promise<CharacteristicValue> {
@@ -315,19 +328,13 @@ export class AirConditionerPlatformAccessory {
   private async handleTargetTemperatureSet(value: CharacteristicValue) {
     this.platform.log.debug('Triggered SET TargetTemperature:', value);
 
-    const ok = await this.sendCommands([
+    await this.runCommands('TargetTemperature', [
       {
         capability: 'thermostatCoolingSetpoint',
         command: 'setCoolingSetpoint',
         arguments: [value],
       },
     ]);
-
-    if (!ok) {
-      this.platform.log.error('Failed to set TargetTemperature');
-    } else {
-      this.scheduleRefresh();
-    }
   }
 
   // ---------------------------------------------------------------------------
@@ -493,10 +500,30 @@ export class AirConditionerPlatformAccessory {
     }
   }
 
+  /**
+   * Sends a set of commands and, on success, schedules the follow-up refresh.
+   * Throws a HAP error on failure so HomeKit reverts the control instead of
+   * showing a value the AC never accepted.
+   */
+  private async runCommands(what: string, commands: unknown[]): Promise<void> {
+    const ok = await this.sendCommands(commands);
+
+    if (!ok) {
+      this.platform.log.error(`Failed to set ${what}`);
+      throw new this.platform.api.hap.HapStatusError(this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+    }
+
+    this.scheduleRefresh();
+  }
+
   /** Invalidate the cache and schedule a fresh read once the command applied. */
   private scheduleRefresh(): void {
     this.statusFetchedAt = 0;
-    setTimeout(() => {
+    if (this.refreshTimer) {
+      clearTimeout(this.refreshTimer);
+    }
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = undefined;
       this.refreshAndPush(true).catch(() => { /* logged in fetch */ });
     }, REFRESH_AFTER_SET_MS);
   }
@@ -505,21 +532,91 @@ export class AirConditionerPlatformAccessory {
    * Returns the device status, served from a short-lived cache and coalescing
    * concurrent callers into a single HTTP request. Never returns `undefined`;
    * on failure it returns the last-known status (or `null`).
+   *
+   * `forceRefresh` bypasses both the TTL and any request already in flight —
+   * see below for why joining one would be wrong.
    */
   private async getDeviceStatus(forceRefresh = false): Promise<DeviceStatus | null> {
-    if (!forceRefresh && this.cachedStatus && Date.now() - this.statusFetchedAt < STATUS_TTL_MS) {
-      return this.cachedStatus;
+    if (!forceRefresh) {
+      if (this.cachedStatus && Date.now() - this.statusFetchedAt < STATUS_TTL_MS) {
+        return this.cachedStatus;
+      }
+
+      // While backing off (see fetchDeviceStatus) serve the cache rather than
+      // adding to the load that triggered the backoff in the first place.
+      if (Date.now() < this.backoffUntil) {
+        return this.cachedStatus;
+      }
+
+      // An ordinary read is happy with whatever request is already running.
+      if (this.inFlightStatus) {
+        return this.inFlightStatus;
+      }
     }
 
-    if (this.inFlightStatus) {
-      return this.inFlightStatus;
-    }
+    // A forced read follows a command we just sent. A request already in flight
+    // was issued *before* that command, so its response describes the old state
+    // and would push the user's change straight back out of the Home app. Queue
+    // behind it instead of adopting its result.
+    const previous = this.inFlightStatus;
+    const request = (async () => {
+      if (previous) {
+        await previous.catch(() => undefined);
+      }
+      return this.fetchDeviceStatus();
+    })();
 
-    this.inFlightStatus = this.fetchDeviceStatus().finally(() => {
+    this.inFlightStatus = request;
+    // Settle handlers only; the promise itself is returned to (and awaited by)
+    // the caller, so this never swallows a rejection.
+    request.then(
+      () => this.clearInFlight(request),
+      () => this.clearInFlight(request),
+    );
+
+    return request;
+  }
+
+  private clearInFlight(request: Promise<DeviceStatus | null>): void {
+    if (this.inFlightStatus === request) {
       this.inFlightStatus = null;
-    });
+    }
+  }
 
-    return this.inFlightStatus;
+  /**
+   * Pauses status requests for a while after a failure. Without this the TTL
+   * cache stops suppressing requests exactly when the API is struggling: a
+   * failed fetch leaves `statusFetchedAt` untouched, so every characteristic
+   * read and every poll tick goes straight back to the network.
+   */
+  private backOff(durationMs: number, reason: string): void {
+    const until = Date.now() + durationMs;
+    if (until <= this.backoffUntil) {
+      return;
+    }
+    this.backoffUntil = until;
+    this.platform.log.warn(`Pausing device status requests for ${Math.round(durationMs / 1000)}s (${reason}).`);
+  }
+
+  /** Retry-After is either a delay in seconds or an HTTP date. */
+  private parseRetryAfter(response: Response): number | undefined {
+    const header = response.headers.get('retry-after');
+    if (!header) {
+      return undefined;
+    }
+
+    const seconds = Number(header);
+    if (Number.isFinite(seconds)) {
+      return seconds > 0 ? Math.min(seconds * 1000, MAX_BACKOFF_MS) : undefined;
+    }
+
+    const date = Date.parse(header);
+    if (Number.isNaN(date)) {
+      return undefined;
+    }
+
+    const delay = date - Date.now();
+    return delay > 0 ? Math.min(delay, MAX_BACKOFF_MS) : undefined;
   }
 
   private async fetchDeviceStatus(): Promise<DeviceStatus | null> {
@@ -530,13 +627,16 @@ export class AirConditionerPlatformAccessory {
       token = await this.platform.getAccessToken();
     } catch (error) {
       this.platform.log.error('Cannot get access token for device status:', (error as Error).message);
+      this.backOff(ERROR_BACKOFF_MS, 'no usable access token');
       return this.cachedStatus;
     }
 
     let response = await this.doStatusFetch(token);
 
     // A 401 usually means the token rotated/expired; refresh once and retry.
-    if (response && response.status === 401) {
+    // Only in OAuth mode: a PAT is static, so forceRefresh() would hand back the
+    // exact same token and the retry would replay the identical failing request.
+    if (response && response.status === 401 && this.platform.tokenManager.mode === 'oauth') {
       this.platform.log.warn('Device status returned 401; refreshing token and retrying.');
       try {
         token = await this.platform.tokenManager.forceRefresh();
@@ -547,13 +647,13 @@ export class AirConditionerPlatformAccessory {
     }
 
     if (!response) {
+      this.backOff(ERROR_BACKOFF_MS, 'network error');
       return this.cachedStatus;
     }
 
     if (response.status === 429) {
-      this.platform.log.warn(
-        'SmartThings rate limit hit (HTTP 429) while reading device status; using cached values and backing off.',
-      );
+      const backoff = this.parseRetryAfter(response) ?? RATE_LIMIT_BACKOFF_MS;
+      this.backOff(backoff, 'SmartThings rate limit, HTTP 429');
       return this.cachedStatus;
     }
 
@@ -565,6 +665,7 @@ export class AirConditionerPlatformAccessory {
           + 'A PAT created after 2024-12-30 expires 24h after creation — switch to OAuth to renew automatically.',
         );
       }
+      this.backOff(ERROR_BACKOFF_MS, `HTTP ${response.status}`);
       return this.cachedStatus;
     }
 
@@ -573,17 +674,20 @@ export class AirConditionerPlatformAccessory {
       data = await response.json();
     } catch {
       this.platform.log.error('Failed to parse device status response as JSON');
+      this.backOff(ERROR_BACKOFF_MS, 'unparseable response');
       return this.cachedStatus;
     }
 
     const main = data?.components?.main;
     if (!main) {
       this.platform.log.error('Device status response is missing components.main');
+      this.backOff(ERROR_BACKOFF_MS, 'response missing components.main');
       return this.cachedStatus;
     }
 
     this.cachedStatus = main;
     this.statusFetchedAt = Date.now();
+    this.backoffUntil = 0;
     return main;
   }
 
@@ -612,7 +716,8 @@ export class AirConditionerPlatformAccessory {
 
     let response = await this.doCommand(token, commands);
 
-    if (response && response.status === 401) {
+    // OAuth only — see the matching note in fetchDeviceStatus.
+    if (response && response.status === 401 && this.platform.tokenManager.mode === 'oauth') {
       this.platform.log.warn('Command returned 401; refreshing token and retrying.');
       try {
         token = await this.platform.tokenManager.forceRefresh();

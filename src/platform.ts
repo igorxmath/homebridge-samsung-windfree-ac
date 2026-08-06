@@ -12,6 +12,12 @@ export class HomebridgePlatform implements DynamicPlatformPlugin {
 
   public readonly tokenManager: TokenManager;
 
+  // A single 'shutdown' listener fans out to every accessory. Registering one
+  // listener per accessory trips Node's default max-listeners warning at 11
+  // devices, which looks like a leak in the Homebridge log.
+  private readonly shutdownHandlers: (() => void)[] = [];
+  private shutdownListenerRegistered = false;
+
   constructor(
     public readonly log: Logger,
     public readonly config: PlatformConfig,
@@ -34,6 +40,30 @@ export class HomebridgePlatform implements DynamicPlatformPlugin {
    */
   getAccessToken(): Promise<string> {
     return this.tokenManager.getAccessToken();
+  }
+
+  /**
+   * Registers a teardown callback to run when Homebridge shuts down. All
+   * callbacks share one underlying 'shutdown' listener.
+   */
+  onShutdown(handler: () => void): void {
+    this.shutdownHandlers.push(handler);
+
+    if (this.shutdownListenerRegistered) {
+      return;
+    }
+    this.shutdownListenerRegistered = true;
+
+    this.api.on('shutdown', () => {
+      for (const shutdownHandler of this.shutdownHandlers) {
+        try {
+          shutdownHandler();
+        } catch (error) {
+          this.log.debug('Shutdown handler failed:', (error as Error).message);
+        }
+      }
+      this.shutdownHandlers.length = 0;
+    });
   }
 
   configureAccessory(accessory: PlatformAccessory) {
