@@ -48,6 +48,7 @@ export class AirConditionerPlatformAccessory {
   private service: Service;
   private windFreeSwitchService?: Service;
   private displaySwitchService?: Service;
+  private autoCleanService?: Service;
 
   private temperatureUnit: TemperatureUnit = TemperatureUnit.Celsius;
 
@@ -151,6 +152,28 @@ export class AirConditionerPlatformAccessory {
       }
     }
 
+    this.platform.log.debug('Optional Auto Clean Switch: ', this.platform.config.OptionalAutoCleanSwitch);
+    if (this.platform.config.OptionalAutoCleanSwitch) {
+      this.platform.log.debug('Adding Auto Clean Switch');
+
+      this.autoCleanService =
+      this.accessory.getService('Auto Clean') ||
+      this.accessory.addService(this.platform.Service.Switch, 'Auto Clean', `autoclean-${accessory.context.device.deviceId}`);
+
+      this.autoCleanService.setCharacteristic(this.platform.Characteristic.Name, 'Auto Clean');
+
+      this.autoCleanService.getCharacteristic(this.platform.Characteristic.On)
+        .onGet(this.handleAutoCleanGet.bind(this))
+        .onSet(this.handleAutoCleanSet.bind(this));
+    } else {
+      const autoCleanService = this.accessory.getService('Auto Clean');
+      if (autoCleanService) {
+        this.platform.log.debug('Removing Auto Clean Switch');
+
+        this.accessory.removeService(autoCleanService);
+      }
+    }
+
     // Warm the cache and start pushing state changes to HomeKit so values stay
     // fresh without every characteristic read hitting the API. Skipped when no
     // credentials are configured, to avoid spamming errors on cached accessories.
@@ -225,6 +248,31 @@ export class AirConditionerPlatformAccessory {
 
     if (!ok) {
       this.platform.log.error('Failed to set DisplaySwitch');
+    } else {
+      this.scheduleRefresh();
+    }
+  }
+
+  private async handleAutoCleanGet(): Promise<CharacteristicValue> {
+    this.platform.log.debug('Triggered GET Auto Clean');
+
+    const status = await this.requireStatus();
+    return this.expect(this.computeAutoClean(status));
+  }
+
+  private async handleAutoCleanSet(value: CharacteristicValue) {
+    this.platform.log.debug('Triggered SET Auto Clean:', value);
+
+    const ok = await this.sendCommands([
+      {
+        capability: 'custom.autoCleaningMode',
+        command: 'setAutoCleaningMode',
+        arguments: [value ? SwitchState.On : SwitchState.Off],
+      },
+    ]);
+
+    if (!ok) {
+      this.platform.log.error('Failed to set Auto Clean');
     } else {
       this.scheduleRefresh();
     }
@@ -423,6 +471,16 @@ export class AirConditionerPlatformAccessory {
     return displaySwitchStatus === SwitchState.On;
   }
 
+  private computeAutoClean(status: DeviceStatus): CharacteristicValue | undefined {
+    const mode = this.readAttr(status, 'custom.autoCleaningMode', 'autoCleaningMode') as SwitchState | undefined;
+
+    if (mode === undefined) {
+      return undefined;
+    }
+
+    return mode === SwitchState.On;
+  }
+
   // ---------------------------------------------------------------------------
   // Status fetching, caching and pushing
   // ---------------------------------------------------------------------------
@@ -489,6 +547,13 @@ export class AirConditionerPlatformAccessory {
       const display = this.computeDisplay(status);
       if (display !== undefined) {
         this.displaySwitchService.updateCharacteristic(chr.On, display);
+      }
+    }
+
+    if (this.autoCleanService) {
+      const autoClean = this.computeAutoClean(status);
+      if (autoClean !== undefined) {
+        this.autoCleanService.updateCharacteristic(chr.On, autoClean);
       }
     }
   }

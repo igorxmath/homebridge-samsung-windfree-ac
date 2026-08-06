@@ -85,6 +85,7 @@ Configuration parameters:
 - `ClientID` / `ClientSecret` / `RefreshToken`: OAuth auth (Option B).
 - `OptionalWindFreeSwitch`: expose a switch for WindFree mode.
 - `OptionalDisplaySwitch`: expose a switch for the display light.
+- `OptionalAutoCleanSwitch`: expose a switch to enable/disable auto-clean.
 
 Sample configuration (PAT):
 
