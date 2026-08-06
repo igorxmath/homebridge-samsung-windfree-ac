@@ -45,6 +45,12 @@
         "title": "Expose a switch to turn on/off the display light",
         "type": "boolean",
         "default": false
+      },
+      "OptionalHumiditySensor": {
+        "title": "Expose the indoor relative humidity reported by the unit",
+        "description": "Only enable this for units that report humidity (relativeHumidityMeasurement).",
+        "type": "boolean",
+        "default": false
       }
     },
     "required": ["name", "BaseURL"]

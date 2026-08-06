@@ -85,6 +85,7 @@ Configuration parameters:
 - `ClientID` / `ClientSecret` / `RefreshToken`: OAuth auth (Option B).
 - `OptionalWindFreeSwitch`: expose a switch for WindFree mode.
 - `OptionalDisplaySwitch`: expose a switch for the display light.
+- `OptionalHumiditySensor`: expose the indoor relative humidity (only for units that report it).
 
 Sample configuration (PAT):
 

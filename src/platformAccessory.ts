@@ -48,6 +48,7 @@ export class AirConditionerPlatformAccessory {
   private service: Service;
   private windFreeSwitchService?: Service;
   private displaySwitchService?: Service;
+  private humiditySensorEnabled = false;
 
   private temperatureUnit: TemperatureUnit = TemperatureUnit.Celsius;
 
@@ -149,6 +150,22 @@ export class AirConditionerPlatformAccessory {
 
         this.accessory.removeService(displaySwitchService);
       }
+    }
+
+    this.platform.log.debug('Optional Humidity Sensor: ', this.platform.config.OptionalHumiditySensor);
+    if (this.platform.config.OptionalHumiditySensor) {
+      this.platform.log.debug('Adding Humidity Sensor');
+
+      this.humiditySensorEnabled = true;
+
+      this.service.getCharacteristic(this.platform.Characteristic.CurrentRelativeHumidity)
+        .onGet(this.handleCurrentRelativeHumidityGet.bind(this));
+    } else if (this.service.testCharacteristic(this.platform.Characteristic.CurrentRelativeHumidity)) {
+      this.platform.log.debug('Removing Humidity Sensor');
+
+      this.service.removeCharacteristic(
+        this.service.getCharacteristic(this.platform.Characteristic.CurrentRelativeHumidity),
+      );
     }
 
     // Warm the cache and start pushing state changes to HomeKit so values stay
@@ -312,6 +329,13 @@ export class AirConditionerPlatformAccessory {
     return this.expect(this.computeTargetTemperature(status));
   }
 
+  private async handleCurrentRelativeHumidityGet(): Promise<CharacteristicValue> {
+    this.platform.log.debug('Triggered GET CurrentRelativeHumidity');
+
+    const status = await this.requireStatus();
+    return this.expect(this.computeCurrentRelativeHumidity(status));
+  }
+
   private async handleTargetTemperatureSet(value: CharacteristicValue) {
     this.platform.log.debug('Triggered SET TargetTemperature:', value);
 
@@ -395,6 +419,11 @@ export class AirConditionerPlatformAccessory {
     return typeof temperature === 'number' ? temperature : undefined;
   }
 
+  private computeCurrentRelativeHumidity(status: DeviceStatus): CharacteristicValue | undefined {
+    const humidity = this.readAttr(status, 'relativeHumidityMeasurement', 'humidity');
+    return typeof humidity === 'number' ? humidity : undefined;
+  }
+
   private computeWindFree(status: DeviceStatus): CharacteristicValue | undefined {
     const airConditionerMode = this.readAttr(status, 'airConditionerMode', 'airConditionerMode') as AirConditionerMode | undefined;
 
@@ -476,6 +505,13 @@ export class AirConditionerPlatformAccessory {
     const targetTemp = this.computeTargetTemperature(status);
     if (targetTemp !== undefined) {
       this.service.updateCharacteristic(chr.TargetTemperature, targetTemp);
+    }
+
+    if (this.humiditySensorEnabled) {
+      const humidity = this.computeCurrentRelativeHumidity(status);
+      if (humidity !== undefined) {
+        this.service.updateCharacteristic(chr.CurrentRelativeHumidity, humidity);
+      }
     }
 
     if (this.windFreeSwitchService) {
