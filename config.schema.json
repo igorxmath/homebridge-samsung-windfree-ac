@@ -78,6 +78,12 @@
         "description": "Ignored on units that do not report custom.autoCleaningMode.",
         "type": "boolean",
         "default": false
+      },
+      "OptionalDryModeSwitch": {
+        "title": "Expose a switch to enable/disable dry (dehumidify) mode",
+        "description": "HomeKit thermostats have no dry state, so dry mode is exposed as a switch. Turning it off returns the unit to the mode it was in before.",
+        "type": "boolean",
+        "default": false
       }
     },
     "required": ["name", "BaseURL"]
