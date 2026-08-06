@@ -86,6 +86,21 @@ Configuration parameters:
 - `OptionalWindFreeSwitch`: expose a switch for WindFree mode.
 - `OptionalDisplaySwitch`: expose a switch for the display light.
 - `IgnoredDevices`: list of SmartThings device IDs or names to hide from HomeKit.
+- `OptionalHumiditySensor`: expose the indoor relative humidity as a separate sensor.
+- `OptionalFanControl`: expose a fan with speed, auto/manual and swing on/off.
+- `OptionalSwingDirectionSwitches`: expose switches for vertical/horizontal swing direction.
+- `OptionalAutoCleanSwitch`: expose a switch to enable/disable auto-clean.
+
+Every optional feature is only added when the unit reports the SmartThings capability behind it
+(`relativeHumidityMeasurement`, `airConditionerFanMode`, `fanOscillationMode`,
+`custom.autoCleaningMode`, `custom.airConditionerOptionalMode`). Enabling one on a unit that does
+not support it logs a warning and leaves the control out, instead of adding a tile that always
+reads "No Response". The display switch is the exception: its command works on units that never
+report the resulting state, so for those the switch shows the last state it was set to.
+
+`OptionalFanControl` and `OptionalSwingDirectionSwitches` are two views of the same
+`fanOscillationMode` attribute — the fan's swing toggle turns oscillation on and off, the
+switches choose the axis. They can be enabled together and stay in sync.
 
 ### Hiding devices
 

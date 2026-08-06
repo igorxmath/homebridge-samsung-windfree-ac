@@ -1,4 +1,4 @@
-import { Service, PlatformAccessory, CharacteristicValue } from 'homebridge';
+import { Service, PlatformAccessory, CharacteristicValue, Characteristic, WithUUID } from 'homebridge';
 
 import { HomebridgePlatform } from './platform';
 
@@ -25,9 +25,28 @@ enum AirConditionerOptionalMode {
   Off = 'off'
 }
 
+// The vendor `execute` options are named after the "light off" feature, not
+// after the display: sending `Light_Off` turns the display *on*. The inversion
+// is intentional — the enum keys are the HomeKit meaning, the values are what
+// SmartThings expects.
 enum AirConditionerDisplayState {
   On = 'Light_Off',
   Off = 'Light_On'
+}
+
+enum FanMode {
+  Auto = 'auto',
+  Low = 'low',
+  Medium = 'medium',
+  High = 'high',
+  Turbo = 'turbo'
+}
+
+enum OscillationMode {
+  Fixed = 'fixed',
+  All = 'all',
+  Vertical = 'vertical',
+  Horizontal = 'horizontal'
 }
 
 type DeviceStatus = Record<string, any>;
@@ -56,12 +75,37 @@ const MAX_BACKOFF_MS = 15 * 60 * 1000;
 // token does not turn the poll timer into a request flood.
 const ERROR_BACKOFF_MS = 30000;
 
+// SmartThings capabilities backing each optional feature.
+const FAN_MODE_CAPABILITY = 'airConditionerFanMode';
+const OSCILLATION_CAPABILITY = 'fanOscillationMode';
+const HUMIDITY_CAPABILITY = 'relativeHumidityMeasurement';
+const AUTO_CLEAN_CAPABILITY = 'custom.autoCleaningMode';
+const WINDFREE_CAPABILITY = 'custom.airConditionerOptionalMode';
+const LIGHTING_CAPABILITY = 'samsungce.airConditionerLighting';
+
 export class AirConditionerPlatformAccessory {
   private service: Service;
   private windFreeSwitchService?: Service;
   private displaySwitchService?: Service;
+  private humiditySensorService?: Service;
+  private fanService?: Service;
+  private swingVerticalService?: Service;
+  private swingHorizontalService?: Service;
+  private autoCleanService?: Service;
 
   private temperatureUnit: TemperatureUnit = TemperatureUnit.Celsius;
+
+  // Whether the unit reports its own display state. When it does the reported
+  // value is authoritative and a missing one is a read failure; when it does
+  // not, the only feedback available is what we last sent.
+  private reportsDisplayState = false;
+  private fanModeSupported = false;
+  private oscillationSupported = false;
+
+  // Last speed the unit was seen running at outside Auto. Used to give the
+  // RotationSpeed slider something meaningful to show while in Auto and to pick
+  // a speed when HomeKit switches the fan back to manual.
+  private lastManualFanMode: FanMode = FanMode.Medium;
 
   private cachedStatus: DeviceStatus | null = null;
   private statusFetchedAt = 0;
@@ -93,6 +137,8 @@ export class AirConditionerPlatformAccessory {
     this.statusURL = this.platform.config.BaseURL + '/devices/' + accessory.context.device.deviceId + '/status';
     this.healthURL = this.platform.config.BaseURL + '/devices/' + accessory.context.device.deviceId + '/health';
 
+    this.reportsDisplayState = this.capabilities.includes(LIGHTING_CAPABILITY);
+
     this.accessory.getService(this.platform.Service.AccessoryInformation)!
       .setCharacteristic(this.platform.Characteristic.Manufacturer, 'Samsung')
       .setCharacteristic(this.platform.Characteristic.Model, 'WindFree')
@@ -121,8 +167,7 @@ export class AirConditionerPlatformAccessory {
       .onGet(this.handleTargetTemperatureGet.bind(this))
       .onSet(this.handleTargetTemperatureSet.bind(this));
 
-    this.platform.log.debug('Optional WindFree Switch: ', this.platform.config.OptionalWindFreeSwitch);
-    if (this.platform.config.OptionalWindFreeSwitch) {
+    if (this.isOptionalFeatureEnabled('OptionalWindFreeSwitch', 'WindFree Switch', [WINDFREE_CAPABILITY])) {
       this.platform.log.debug('Adding WindFree Switch');
 
       this.windFreeSwitchService =
@@ -135,14 +180,12 @@ export class AirConditionerPlatformAccessory {
         .onGet(this.handleWindFreeSwitchGet.bind(this))
         .onSet(this.handleWindFreeSwitchSet.bind(this));
     } else {
-      const windFreeSwitchService = this.accessory.getService('WindFree');
-      if (windFreeSwitchService) {
-        this.platform.log.debug('Removing WindFree Switch');
-
-        this.accessory.removeService(windFreeSwitchService);
-      }
+      this.removeServiceByName('WindFree');
     }
 
+    // Not gated on a capability: the display is driven through the vendor
+    // `execute` command, which units accept whether or not they report the
+    // resulting state back.
     this.platform.log.debug('Optional Display Switch: ', this.platform.config.OptionalDisplaySwitch);
     if (this.platform.config.OptionalDisplaySwitch) {
       this.platform.log.debug('Adding Display Switch');
@@ -156,13 +199,110 @@ export class AirConditionerPlatformAccessory {
       this.displaySwitchService.getCharacteristic(this.platform.Characteristic.On)
         .onGet(this.handleDisplaySwitchGet.bind(this))
         .onSet(this.handleDisplaySwitchSet.bind(this));
-    } else {
-      const displaySwitchService = this.accessory.getService('Display');
-      if (displaySwitchService) {
-        this.platform.log.debug('Removing Display Switch');
 
-        this.accessory.removeService(displaySwitchService);
+      if (!this.reportsDisplayState) {
+        this.platform.log.debug('Unit does not report its display state; falling back to the last state we set');
       }
+    } else {
+      this.removeServiceByName('Display');
+    }
+
+    if (this.isOptionalFeatureEnabled('OptionalHumiditySensor', 'Humidity Sensor', [HUMIDITY_CAPABILITY])) {
+      this.platform.log.debug('Adding Humidity Sensor');
+
+      // A separate service, so a humidity read failure can never mark the
+      // thermostat itself as unresponsive.
+      this.humiditySensorService =
+      this.accessory.getService('Humidity') ||
+      this.accessory.addService(this.platform.Service.HumiditySensor, 'Humidity', `humidity-${accessory.context.device.deviceId}`);
+
+      this.humiditySensorService.setCharacteristic(this.platform.Characteristic.Name, 'Humidity');
+
+      this.humiditySensorService.getCharacteristic(this.platform.Characteristic.CurrentRelativeHumidity)
+        .onGet(this.handleCurrentRelativeHumidityGet.bind(this));
+    } else {
+      this.removeServiceByName('Humidity');
+    }
+
+    this.fanModeSupported = this.capabilities.includes(FAN_MODE_CAPABILITY);
+    this.oscillationSupported = this.capabilities.includes(OSCILLATION_CAPABILITY);
+
+    this.platform.log.debug('Optional Fan Control: ', this.platform.config.OptionalFanControl);
+    if (this.platform.config.OptionalFanControl) {
+      this.platform.log.debug('Adding Fan Control');
+
+      this.fanService =
+      this.accessory.getService('Fan') ||
+      this.accessory.addService(this.platform.Service.Fanv2, 'Fan', `fan-${accessory.context.device.deviceId}`);
+
+      this.fanService.setCharacteristic(this.platform.Characteristic.Name, 'Fan');
+
+      this.fanService.getCharacteristic(this.platform.Characteristic.Active)
+        .onGet(this.handleFanActiveGet.bind(this))
+        .onSet(this.handleFanActiveSet.bind(this));
+
+      this.fanService.getCharacteristic(this.platform.Characteristic.CurrentFanState)
+        .onGet(this.handleCurrentFanStateGet.bind(this));
+
+      // Speed and auto/manual only exist for units that expose a fan mode.
+      // Advertising them anyway gives a fan tile whose commands always fail.
+      if (this.fanModeSupported) {
+        this.fanService.getCharacteristic(this.platform.Characteristic.TargetFanState)
+          .onGet(this.handleTargetFanStateGet.bind(this))
+          .onSet(this.handleTargetFanStateSet.bind(this));
+
+        this.fanService.getCharacteristic(this.platform.Characteristic.RotationSpeed)
+          .setProps({ minValue: 0, maxValue: 100, minStep: 25 })
+          .onGet(this.handleRotationSpeedGet.bind(this))
+          .onSet(this.handleRotationSpeedSet.bind(this));
+      } else {
+        this.platform.log.info(
+          `${this.name} does not report ${FAN_MODE_CAPABILITY}; the fan is exposed as on/off only.`,
+        );
+
+        this.removeCharacteristic(this.fanService, this.platform.Characteristic.TargetFanState);
+        this.removeCharacteristic(this.fanService, this.platform.Characteristic.RotationSpeed);
+      }
+
+      if (this.oscillationSupported) {
+        this.fanService.getCharacteristic(this.platform.Characteristic.SwingMode)
+          .onGet(this.handleSwingModeGet.bind(this))
+          .onSet(this.handleSwingModeSet.bind(this));
+      } else {
+        this.platform.log.info(`${this.name} does not report ${OSCILLATION_CAPABILITY}; the fan has no swing control.`);
+
+        this.removeCharacteristic(this.fanService, this.platform.Characteristic.SwingMode);
+      }
+    } else {
+      this.removeServiceByName('Fan');
+    }
+
+    if (this.isOptionalFeatureEnabled('OptionalSwingDirectionSwitches', 'Swing Direction Switches', [OSCILLATION_CAPABILITY])) {
+      this.platform.log.debug('Adding Swing Direction Switches');
+
+      this.swingVerticalService = this.setupSwingDirectionSwitch(
+        'Swing Vertical', `swing-vertical-${accessory.context.device.deviceId}`, OscillationMode.Vertical);
+      this.swingHorizontalService = this.setupSwingDirectionSwitch(
+        'Swing Horizontal', `swing-horizontal-${accessory.context.device.deviceId}`, OscillationMode.Horizontal);
+    } else {
+      this.removeServiceByName('Swing Vertical');
+      this.removeServiceByName('Swing Horizontal');
+    }
+
+    if (this.isOptionalFeatureEnabled('OptionalAutoCleanSwitch', 'Auto Clean Switch', [AUTO_CLEAN_CAPABILITY])) {
+      this.platform.log.debug('Adding Auto Clean Switch');
+
+      this.autoCleanService =
+      this.accessory.getService('Auto Clean') ||
+      this.accessory.addService(this.platform.Service.Switch, 'Auto Clean', `autoclean-${accessory.context.device.deviceId}`);
+
+      this.autoCleanService.setCharacteristic(this.platform.Characteristic.Name, 'Auto Clean');
+
+      this.autoCleanService.getCharacteristic(this.platform.Characteristic.On)
+        .onGet(this.handleAutoCleanGet.bind(this))
+        .onSet(this.handleAutoCleanSet.bind(this));
+    } else {
+      this.removeServiceByName('Auto Clean');
     }
 
     // Warm the cache and start pushing state changes to HomeKit so values stay
@@ -187,6 +327,76 @@ export class AirConditionerPlatformAccessory {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Optional service wiring
+  // ---------------------------------------------------------------------------
+
+  /**
+   * An optional feature is only wired up when the unit actually reports the
+   * capabilities behind it. Exposing a control the unit cannot answer for turns
+   * every read into a "No Response" accessory and every write into a silent
+   * failure, so we log once and leave the control out instead.
+   */
+  private isOptionalFeatureEnabled(configKey: string, feature: string, requiredCapabilities: string[]): boolean {
+    const requested = Boolean(this.platform.config[configKey]);
+    this.platform.log.debug(`Optional ${feature}: `, this.platform.config[configKey]);
+
+    if (!requested) {
+      return false;
+    }
+
+    const missing = requiredCapabilities.filter(capability => !this.capabilities.includes(capability));
+    if (missing.length > 0) {
+      this.platform.log.warn(
+        `${feature} is enabled in the config but ${this.name} does not report ${missing.join(', ')}; skipping it.`,
+      );
+      return false;
+    }
+
+    return true;
+  }
+
+  private removeServiceByName(name: string): void {
+    const service = this.accessory.getService(name);
+    if (service) {
+      this.platform.log.debug(`Removing ${name}`);
+
+      this.accessory.removeService(service);
+    }
+  }
+
+  private removeCharacteristic(service: Service, characteristic: WithUUID<new () => Characteristic>): void {
+    // Looked up by UUID rather than with getCharacteristic(), which would add
+    // the optional characteristic back if it isn't there.
+    const existing = service.characteristics.find(candidate => candidate.UUID === characteristic.UUID);
+    if (existing) {
+      service.removeCharacteristic(existing);
+    }
+  }
+
+  private setupSwingDirectionSwitch(name: string, subtype: string, direction: OscillationMode): Service {
+    const service =
+      this.accessory.getService(name) ||
+      this.accessory.addService(this.platform.Service.Switch, name, subtype);
+
+    service.setCharacteristic(this.platform.Characteristic.Name, name);
+
+    service.getCharacteristic(this.platform.Characteristic.On)
+      .onGet(async () => {
+        const status = await this.requireStatus();
+        return this.expect(this.computeSwingDirection(status, direction));
+      })
+      .onSet(async (value) => {
+        await this.setSwingDirection(name, direction, Boolean(value));
+      });
+
+    return service;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Characteristic handlers
+  // ---------------------------------------------------------------------------
+
   private async handleWindFreeSwitchGet(): Promise<CharacteristicValue> {
     this.platform.log.debug('Triggered GET WindFreeSwitch');
 
@@ -198,28 +408,18 @@ export class AirConditionerPlatformAccessory {
     this.platform.log.debug('Triggered SET WindFreeSwitch:', value);
 
     // The decision below rejects the user's request, so it must not rest on a
-    // cache that can be seconds stale (or, after a failed read, arbitrarily
-    // old). Force a fresh read of the current mode.
-    const status = await this.getDeviceStatus(true);
-
-    if (!status) {
-      this.platform.log.error('Cannot set WindFreeSwitch: device status is unavailable');
-      throw new this.platform.api.hap.HapStatusError(this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
-    }
+    // possibly stale cache.
+    const status = await this.requireFreshStatus('WindFreeSwitch');
 
     const airConditionerMode = this.readAttr(status, 'airConditionerMode', 'airConditionerMode') as AirConditionerMode | undefined;
 
     if (airConditionerMode === AirConditionerMode.Auto) {
-      // Report the rejection instead of silently dropping it: HomeKit would
-      // otherwise keep showing a switch position the AC never accepted.
-      this.platform.log.warn('WindFree is not supported in Auto mode; ignoring the requested change.');
-      this.pushStatus(status);
-      throw new this.platform.api.hap.HapStatusError(this.platform.api.hap.HAPStatus.NOT_ALLOWED_IN_CURRENT_STATE);
+      this.rejectRequest('WindFree is not supported in Auto mode; ignoring the requested change.', status);
     }
 
     await this.runCommands('WindFreeSwitch', [
       {
-        capability: 'custom.airConditionerOptionalMode',
+        capability: WINDFREE_CAPABILITY,
         command: 'setAcOptionalMode',
         arguments: value ? [AirConditionerOptionalMode.WindFree] : [AirConditionerOptionalMode.Off],
       },
@@ -230,7 +430,16 @@ export class AirConditionerPlatformAccessory {
     this.platform.log.debug('Triggered GET DisplaySwitch');
 
     const status = await this.requireStatus();
-    return this.expect(this.computeDisplay(status));
+    const reported = this.computeDisplay(status);
+
+    // Units that report the lighting capability give the real state, and a
+    // missing value there is a genuine read failure worth surfacing. Only the
+    // units that never report it fall back to the last state we set.
+    if (this.reportsDisplayState) {
+      return this.expect(reported);
+    }
+
+    return reported ?? this.displayState;
   }
 
   private async handleDisplaySwitchSet(value: CharacteristicValue) {
@@ -245,6 +454,243 @@ export class AirConditionerPlatformAccessory {
             value ? AirConditionerDisplayState.On : AirConditionerDisplayState.Off,
           ],
         }],
+      },
+    ]);
+
+    this.displayState = Boolean(value);
+  }
+
+  private async handleCurrentRelativeHumidityGet(): Promise<CharacteristicValue> {
+    this.platform.log.debug('Triggered GET CurrentRelativeHumidity');
+
+    const status = await this.requireStatus();
+    return this.expect(this.computeCurrentRelativeHumidity(status));
+  }
+
+  private async handleAutoCleanGet(): Promise<CharacteristicValue> {
+    this.platform.log.debug('Triggered GET Auto Clean');
+
+    const status = await this.requireStatus();
+    return this.expect(this.computeAutoClean(status));
+  }
+
+  private async handleAutoCleanSet(value: CharacteristicValue) {
+    this.platform.log.debug('Triggered SET Auto Clean:', value);
+
+    await this.runCommands('Auto Clean', [
+      {
+        capability: AUTO_CLEAN_CAPABILITY,
+        command: 'setAutoCleaningMode',
+        arguments: [value ? SwitchState.On : SwitchState.Off],
+      },
+    ]);
+  }
+
+  private async handleFanActiveGet(): Promise<CharacteristicValue> {
+    this.platform.log.debug('Triggered GET Fan Active');
+
+    const status = await this.requireStatus();
+    return this.expect(this.computeActive(status));
+  }
+
+  private async handleFanActiveSet(value: CharacteristicValue) {
+    this.platform.log.debug('Triggered SET Fan Active:', value);
+
+    const on = value === this.platform.Characteristic.Active.ACTIVE;
+
+    await this.runCommands('Fan Active', [
+      {
+        capability: 'switch',
+        command: on ? SwitchState.On : SwitchState.Off,
+      },
+    ]);
+  }
+
+  private async handleCurrentFanStateGet(): Promise<CharacteristicValue> {
+    this.platform.log.debug('Triggered GET CurrentFanState');
+
+    const status = await this.requireStatus();
+    return this.expect(this.computeCurrentFanState(status));
+  }
+
+  private async handleTargetFanStateGet(): Promise<CharacteristicValue> {
+    this.platform.log.debug('Triggered GET TargetFanState');
+
+    const status = await this.requireStatus();
+    return this.expect(this.computeTargetFanState(status));
+  }
+
+  private async handleTargetFanStateSet(value: CharacteristicValue) {
+    this.platform.log.debug('Triggered SET TargetFanState:', value);
+
+    const auto = value === this.platform.Characteristic.TargetFanState.AUTO;
+    if (auto) {
+      await this.setFanMode(FanMode.Auto);
+      return;
+    }
+
+    const status = await this.requireFreshStatus('TargetFanState');
+    const current = this.computeFanMode(status);
+
+    // Without a reliable current mode, switching to manual would have to guess
+    // a speed — and guessing wrong drops a running unit to a slower one.
+    if (current === undefined) {
+      this.platform.log.error('Cannot switch the fan to manual: the current fan mode is unknown');
+      throw new this.platform.api.hap.HapStatusError(this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+    }
+
+    // Already on a fixed speed; HomeKit is just echoing the state back.
+    if (current !== FanMode.Auto) {
+      return;
+    }
+
+    await this.setFanMode(this.lastManualFanMode);
+  }
+
+  private async handleRotationSpeedGet(): Promise<CharacteristicValue> {
+    this.platform.log.debug('Triggered GET RotationSpeed');
+
+    const status = await this.requireStatus();
+    return this.expect(this.computeRotationSpeed(status));
+  }
+
+  private async handleRotationSpeedSet(value: CharacteristicValue) {
+    this.platform.log.debug('Triggered SET RotationSpeed:', value);
+
+    const percent = value as number;
+
+    if (percent <= 0) {
+      // Slider at zero turns the unit off.
+      await this.runCommands('RotationSpeed', [{ capability: 'switch', command: SwitchState.Off }]);
+      return;
+    }
+
+    const status = await this.requireFreshStatus('RotationSpeed');
+
+    // The slider has no position of its own for Auto, so it shows the last
+    // manual speed. Writing that same value back — a scene restore, or HomeKit
+    // echoing a read — must not silently drop the unit out of Auto.
+    if (this.computeFanMode(status) === FanMode.Auto && percent === this.computeRotationSpeed(status)) {
+      this.platform.log.debug('RotationSpeed unchanged while in Auto; leaving the fan mode alone');
+      return;
+    }
+
+    const commands: unknown[] = [];
+
+    // A speed set against a powered-off unit has to power it on, otherwise the
+    // command is accepted and nothing happens.
+    if (this.readAttr(status, 'switch', 'switch') !== SwitchState.On) {
+      commands.push({ capability: 'switch', command: SwitchState.On });
+    }
+
+    const mode = this.percentToFanMode(percent);
+    commands.push({ capability: FAN_MODE_CAPABILITY, command: 'setFanMode', arguments: [mode] });
+
+    await this.runCommands('RotationSpeed', commands);
+
+    this.lastManualFanMode = mode;
+  }
+
+  private async handleSwingModeGet(): Promise<CharacteristicValue> {
+    this.platform.log.debug('Triggered GET SwingMode');
+
+    const status = await this.requireStatus();
+    return this.expect(this.computeSwingMode(status));
+  }
+
+  private async handleSwingModeSet(value: CharacteristicValue) {
+    this.platform.log.debug('Triggered SET SwingMode:', value);
+
+    const enabled = value === this.platform.Characteristic.SwingMode.SWING_ENABLED;
+
+    if (!enabled) {
+      await this.setOscillationMode(OscillationMode.Fixed, 'SwingMode');
+      return;
+    }
+
+    const status = await this.requireFreshStatus('SwingMode');
+    const current = this.computeOscillation(status);
+
+    // Already swinging along some axis — don't widen it to `all` just because
+    // HomeKit echoed the state back.
+    if (current !== undefined && current !== OscillationMode.Fixed) {
+      return;
+    }
+
+    const target = this.resolveOscillationMode(
+      status, [OscillationMode.All, OscillationMode.Vertical, OscillationMode.Horizontal]);
+
+    if (target === undefined) {
+      this.rejectRequest(`${this.name} does not support any swing mode; ignoring the requested change.`, status);
+    }
+
+    await this.setOscillationMode(target, 'SwingMode');
+  }
+
+  private async setSwingDirection(name: string, direction: OscillationMode, on: boolean): Promise<void> {
+    const status = await this.requireFreshStatus(name);
+    const current = this.computeOscillation(status);
+
+    // Every write here is relative to the other axis, so acting on an unknown
+    // current mode risks cancelling a swing the user never touched.
+    if (current === undefined) {
+      this.platform.log.error(`Cannot set ${name}: the current oscillation mode is unknown`);
+      throw new this.platform.api.hap.HapStatusError(this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+    }
+
+    const other = direction === OscillationMode.Vertical ? OscillationMode.Horizontal : OscillationMode.Vertical;
+    let preferred: OscillationMode[];
+
+    if (on) {
+      // Combine with the other axis when the unit can swing both ways.
+      preferred = current === other || current === OscillationMode.All
+        ? [OscillationMode.All, direction]
+        : [direction];
+    } else if (current === OscillationMode.All) {
+      // Only this axis was turned off; keep the other one swinging.
+      preferred = [other, OscillationMode.Fixed];
+    } else if (current === direction) {
+      preferred = [OscillationMode.Fixed];
+    } else {
+      // This axis is already off. Sending `fixed` here would cancel the other
+      // direction's swing instead.
+      this.platform.log.debug(`${name} is already off; nothing to do`);
+      return;
+    }
+
+    const target = this.resolveOscillationMode(status, preferred);
+
+    if (target === undefined) {
+      this.rejectRequest(`${this.name} supports none of: ${preferred.join(', ')}; ignoring the requested change.`, status);
+    }
+
+    if (target === current) {
+      return;
+    }
+
+    await this.setOscillationMode(target, name);
+  }
+
+  private async setFanMode(mode: FanMode): Promise<void> {
+    await this.runCommands('FanMode', [
+      {
+        capability: FAN_MODE_CAPABILITY,
+        command: 'setFanMode',
+        arguments: [mode],
+      },
+    ]);
+
+    if (mode !== FanMode.Auto) {
+      this.lastManualFanMode = mode;
+    }
+  }
+
+  private async setOscillationMode(mode: OscillationMode, label: string): Promise<void> {
+    await this.runCommands(label, [
+      {
+        capability: OSCILLATION_CAPABILITY,
+        command: 'setFanOscillationMode',
+        arguments: [mode],
       },
     ]);
   }
@@ -402,6 +848,11 @@ export class AirConditionerPlatformAccessory {
     return typeof temperature === 'number' ? temperature : undefined;
   }
 
+  private computeCurrentRelativeHumidity(status: DeviceStatus): CharacteristicValue | undefined {
+    const humidity = this.readAttr(status, HUMIDITY_CAPABILITY, 'humidity');
+    return typeof humidity === 'number' ? humidity : undefined;
+  }
+
   private computeWindFree(status: DeviceStatus): CharacteristicValue | undefined {
     const airConditionerMode = this.readAttr(status, 'airConditionerMode', 'airConditionerMode') as AirConditionerMode | undefined;
 
@@ -411,7 +862,7 @@ export class AirConditionerPlatformAccessory {
     }
 
     const windFreeSwitchStatus =
-      this.readAttr(status, 'custom.airConditionerOptionalMode', 'acOptionalMode') as AirConditionerOptionalMode | undefined;
+      this.readAttr(status, WINDFREE_CAPABILITY, 'acOptionalMode') as AirConditionerOptionalMode | undefined;
 
     if (windFreeSwitchStatus === undefined) {
       return undefined;
@@ -421,13 +872,163 @@ export class AirConditionerPlatformAccessory {
   }
 
   private computeDisplay(status: DeviceStatus): CharacteristicValue | undefined {
-    const displaySwitchStatus = this.readAttr(status, 'samsungce.airConditionerLighting', 'lighting') as SwitchState | undefined;
+    const displaySwitchStatus = this.readAttr(status, LIGHTING_CAPABILITY, 'lighting') as SwitchState | undefined;
 
     if (displaySwitchStatus === undefined) {
       return undefined;
     }
 
     return displaySwitchStatus === SwitchState.On;
+  }
+
+  private computeAutoClean(status: DeviceStatus): CharacteristicValue | undefined {
+    const mode = this.readAttr(status, AUTO_CLEAN_CAPABILITY, 'autoCleaningMode') as SwitchState | undefined;
+
+    if (mode === undefined) {
+      return undefined;
+    }
+
+    return mode === SwitchState.On;
+  }
+
+  private computeActive(status: DeviceStatus): CharacteristicValue | undefined {
+    const switchStatus = this.readAttr(status, 'switch', 'switch') as SwitchState | undefined;
+
+    if (switchStatus === undefined) {
+      return undefined;
+    }
+
+    const active = this.platform.Characteristic.Active;
+    return switchStatus === SwitchState.On ? active.ACTIVE : active.INACTIVE;
+  }
+
+  private computeCurrentFanState(status: DeviceStatus): CharacteristicValue | undefined {
+    const switchStatus = this.readAttr(status, 'switch', 'switch') as SwitchState | undefined;
+
+    if (switchStatus === undefined) {
+      return undefined;
+    }
+
+    const currentFanState = this.platform.Characteristic.CurrentFanState;
+    return switchStatus === SwitchState.On ? currentFanState.BLOWING_AIR : currentFanState.INACTIVE;
+  }
+
+  /** The unit's fan mode, or `undefined` when it was not read. */
+  private computeFanMode(status: DeviceStatus | null): FanMode | undefined {
+    const fanMode = this.readAttr(status, FAN_MODE_CAPABILITY, 'fanMode');
+    return typeof fanMode === 'string' ? fanMode as FanMode : undefined;
+  }
+
+  private computeTargetFanState(status: DeviceStatus): CharacteristicValue | undefined {
+    const fanMode = this.computeFanMode(status);
+
+    if (fanMode === undefined) {
+      return undefined;
+    }
+
+    const targetFanState = this.platform.Characteristic.TargetFanState;
+    return fanMode === FanMode.Auto ? targetFanState.AUTO : targetFanState.MANUAL;
+  }
+
+  private computeRotationSpeed(status: DeviceStatus | null): number | undefined {
+    // Off reads as 0% so the slider round-trips: writing 0 turns the unit off.
+    if (this.readAttr(status, 'switch', 'switch') === SwitchState.Off) {
+      return 0;
+    }
+
+    const fanMode = this.computeFanMode(status);
+    return fanMode === undefined ? undefined : this.fanModeToPercent(fanMode);
+  }
+
+  private computeOscillation(status: DeviceStatus | null): OscillationMode | undefined {
+    const mode = this.readAttr(status, OSCILLATION_CAPABILITY, 'fanOscillationMode');
+    return typeof mode === 'string' ? mode as OscillationMode : undefined;
+  }
+
+  private computeSwingMode(status: DeviceStatus): CharacteristicValue | undefined {
+    const mode = this.computeOscillation(status);
+
+    if (mode === undefined) {
+      return undefined;
+    }
+
+    const swingMode = this.platform.Characteristic.SwingMode;
+    return mode === OscillationMode.Fixed ? swingMode.SWING_DISABLED : swingMode.SWING_ENABLED;
+  }
+
+  /** `all` means both axes are swinging, so both direction switches read On. */
+  private computeSwingDirection(status: DeviceStatus, direction: OscillationMode): CharacteristicValue | undefined {
+    const mode = this.computeOscillation(status);
+
+    if (mode === undefined) {
+      return undefined;
+    }
+
+    return mode === direction || mode === OscillationMode.All;
+  }
+
+  private supportedOscillationModes(status: DeviceStatus | null): OscillationMode[] {
+    const modes = this.readAttr(status, OSCILLATION_CAPABILITY, 'supportedFanOscillationModes');
+    return Array.isArray(modes) ? modes as OscillationMode[] : [];
+  }
+
+  /**
+   * Picks the first of `preferred` the unit actually supports. Units that don't
+   * advertise their supported modes get the first preference, which is what we
+   * did before the list was consulted at all.
+   */
+  private resolveOscillationMode(status: DeviceStatus | null, preferred: OscillationMode[]): OscillationMode | undefined {
+    const supported = this.supportedOscillationModes(status);
+
+    if (supported.length === 0) {
+      return preferred[0];
+    }
+
+    return preferred.find(mode => supported.includes(mode));
+  }
+
+  private fanModeToPercent(fanMode: FanMode): number {
+    switch (fanMode) {
+      case FanMode.Low: return 25;
+      case FanMode.Medium: return 50;
+      case FanMode.High: return 75;
+      case FanMode.Turbo: return 100;
+      // Auto has no speed of its own; TargetFanState reports the auto mode and
+      // the slider shows the last manual speed so the two stay consistent.
+      default: return this.fanModeToPercent(this.lastManualFanMode);
+    }
+  }
+
+  private percentToFanMode(percent: number): FanMode {
+    if (percent <= 25) {
+      return FanMode.Low;
+    }
+    if (percent <= 50) {
+      return FanMode.Medium;
+    }
+    if (percent <= 75) {
+      return FanMode.High;
+    }
+    return FanMode.Turbo;
+  }
+
+  /**
+   * Last display state we know of, persisted in the accessory context so units
+   * that never report it don't come back from a restart claiming the display is
+   * on. Stored in HomeKit polarity (true = display lit).
+   */
+  private get displayState(): boolean {
+    const stored = this.accessory.context.displayState;
+    return typeof stored === 'boolean' ? stored : true;
+  }
+
+  private set displayState(value: boolean) {
+    if (this.accessory.context.displayState === value) {
+      return;
+    }
+
+    this.accessory.context.displayState = value;
+    this.platform.api.updatePlatformAccessories([this.accessory]);
   }
 
   // ---------------------------------------------------------------------------
@@ -485,6 +1086,13 @@ export class AirConditionerPlatformAccessory {
       this.service.updateCharacteristic(chr.TargetTemperature, targetTemp);
     }
 
+    if (this.humiditySensorService) {
+      const humidity = this.computeCurrentRelativeHumidity(status);
+      if (humidity !== undefined) {
+        this.humiditySensorService.updateCharacteristic(chr.CurrentRelativeHumidity, humidity);
+      }
+    }
+
     if (this.windFreeSwitchService) {
       const windFree = this.computeWindFree(status);
       if (windFree !== undefined) {
@@ -495,7 +1103,67 @@ export class AirConditionerPlatformAccessory {
     if (this.displaySwitchService) {
       const display = this.computeDisplay(status);
       if (display !== undefined) {
+        this.displayState = display as boolean;
         this.displaySwitchService.updateCharacteristic(chr.On, display);
+      }
+    }
+
+    if (this.autoCleanService) {
+      const autoClean = this.computeAutoClean(status);
+      if (autoClean !== undefined) {
+        this.autoCleanService.updateCharacteristic(chr.On, autoClean);
+      }
+    }
+
+    // Remember the speed the unit is actually running at, so Auto has something
+    // truthful to show on the slider.
+    const fanMode = this.computeFanMode(status);
+    if (fanMode !== undefined && fanMode !== FanMode.Auto) {
+      this.lastManualFanMode = fanMode;
+    }
+
+    if (this.fanService) {
+      const active = this.computeActive(status);
+      if (active !== undefined) {
+        this.fanService.updateCharacteristic(chr.Active, active);
+      }
+
+      const currentFanState = this.computeCurrentFanState(status);
+      if (currentFanState !== undefined) {
+        this.fanService.updateCharacteristic(chr.CurrentFanState, currentFanState);
+      }
+
+      if (this.fanModeSupported) {
+        const targetFanState = this.computeTargetFanState(status);
+        if (targetFanState !== undefined) {
+          this.fanService.updateCharacteristic(chr.TargetFanState, targetFanState);
+        }
+
+        const rotationSpeed = this.computeRotationSpeed(status);
+        if (rotationSpeed !== undefined) {
+          this.fanService.updateCharacteristic(chr.RotationSpeed, rotationSpeed);
+        }
+      }
+
+      if (this.oscillationSupported) {
+        const swingMode = this.computeSwingMode(status);
+        if (swingMode !== undefined) {
+          this.fanService.updateCharacteristic(chr.SwingMode, swingMode);
+        }
+      }
+    }
+
+    if (this.swingVerticalService) {
+      const vertical = this.computeSwingDirection(status, OscillationMode.Vertical);
+      if (vertical !== undefined) {
+        this.swingVerticalService.updateCharacteristic(chr.On, vertical);
+      }
+    }
+
+    if (this.swingHorizontalService) {
+      const horizontal = this.computeSwingDirection(status, OscillationMode.Horizontal);
+      if (horizontal !== undefined) {
+        this.swingHorizontalService.updateCharacteristic(chr.On, horizontal);
       }
     }
   }
@@ -514,6 +1182,34 @@ export class AirConditionerPlatformAccessory {
     }
 
     this.scheduleRefresh();
+  }
+
+  /**
+   * Status for a write whose outcome depends on what the unit is doing now —
+   * which command to send, or whether to send one at all. A cached read can be
+   * seconds stale (or, after a failed fetch, arbitrarily old), so these force a
+   * fresh one rather than acting on a guess.
+   */
+  private async requireFreshStatus(what: string): Promise<DeviceStatus> {
+    const status = await this.getDeviceStatus(true);
+
+    if (!status) {
+      this.platform.log.error(`Cannot set ${what}: device status is unavailable`);
+      throw new this.platform.api.hap.HapStatusError(this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+    }
+
+    return status;
+  }
+
+  /**
+   * Reports a request the unit cannot honour, instead of silently dropping it:
+   * HomeKit would otherwise keep showing a control position the AC never
+   * accepted. Pushes the real state back so the control snaps to it.
+   */
+  private rejectRequest(message: string, status: DeviceStatus): never {
+    this.platform.log.warn(message);
+    this.pushStatus(status);
+    throw new this.platform.api.hap.HapStatusError(this.platform.api.hap.HAPStatus.NOT_ALLOWED_IN_CURRENT_STATE);
   }
 
   /** Invalidate the cache and schedule a fresh read once the command applied. */
