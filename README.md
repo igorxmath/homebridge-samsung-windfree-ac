@@ -85,6 +85,26 @@ Configuration parameters:
 - `ClientID` / `ClientSecret` / `RefreshToken`: OAuth auth (Option B).
 - `OptionalWindFreeSwitch`: expose a switch for WindFree mode.
 - `OptionalDisplaySwitch`: expose a switch for the display light.
+- `IgnoredDevices`: list of SmartThings device IDs or names to hide from HomeKit.
+
+### Hiding devices
+
+By default every compatible air conditioner on the account is added to HomeKit. To leave some out,
+list them in `IgnoredDevices` by device ID or by name (case-insensitive):
+
+```json
+{
+    "platform": "Homebridge Samsung WindFree AC",
+    "name": "Samsung WindFree AC",
+    "BaseURL": "https://api.smartthings.com/v1/",
+    "AccessToken": "your_access_token",
+    "IgnoredDevices": ["Guest Room AC", "a1b2c3d4-0000-1111-2222-333344445555"]
+}
+```
+
+Both identifiers are printed for every discovered device in the Homebridge log (enable debug mode
+for the full list). Prefer the device ID — names change when you rename a device in the SmartThings
+app. Adding a device that is already in HomeKit removes its accessory on the next restart.
 
 Sample configuration (PAT):
 

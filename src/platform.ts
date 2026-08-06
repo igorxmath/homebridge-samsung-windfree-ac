@@ -18,6 +18,9 @@ export class HomebridgePlatform implements DynamicPlatformPlugin {
   private readonly shutdownHandlers: (() => void)[] = [];
   private shutdownListenerRegistered = false;
 
+  /** Device IDs and labels to skip, normalized for case-insensitive matching. */
+  private readonly ignoredDevices: string[];
+
   constructor(
     public readonly log: Logger,
     public readonly config: PlatformConfig,
@@ -25,6 +28,8 @@ export class HomebridgePlatform implements DynamicPlatformPlugin {
 
   ) {
     this.log.debug('Finished initializing platform:', this.config.name);
+
+    this.ignoredDevices = this.parseIgnoredDevices(this.config.IgnoredDevices);
 
     this.tokenManager = new TokenManager(this.log, this.config, this.api.user.storagePath());
 
@@ -144,10 +149,19 @@ export class HomebridgePlatform implements DynamicPlatformPlugin {
     for (const device of data.items) {
       const uuid = this.api.hap.uuid.generate(device.deviceId);
 
+      if (this.isDeviceIgnored(device)) {
+        this.log.info('Ignoring device (listed in IgnoredDevices):', device.label);
+
+        this.removeCachedAccessory(uuid);
+        continue;
+      }
+
       const capabilities = device.components[0].capabilities
         .map((capability: { id: string }) => capability.id);
 
-      this.log.debug('Discovered device:', device.label, capabilities);
+      // The device ID is logged alongside the name so it can be copied into
+      // IgnoredDevices, which is the identifier that survives a rename.
+      this.log.debug('Discovered device:', device.label, device.deviceId, capabilities);
 
       if (!this.doesDeviceSupportCapabilities(capabilities)) {
         this.log.warn('Device has unsupported capabilities:', device.label);
@@ -172,6 +186,66 @@ export class HomebridgePlatform implements DynamicPlatformPlugin {
         this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       }
     }
+  }
+
+  /**
+   * Reads the `IgnoredDevices` config entry, dropping anything that isn't a
+   * usable string so one bad entry can't take discovery down with it.
+   */
+  private parseIgnoredDevices(configured: unknown): string[] {
+    if (configured === undefined || configured === null) {
+      return [];
+    }
+
+    if (!Array.isArray(configured)) {
+      this.log.warn('IgnoredDevices must be a list of device IDs or names; ignoring it.');
+      return [];
+    }
+
+    const ignored = configured
+      .filter((entry): entry is string => typeof entry === 'string')
+      .map(entry => entry.trim().toLowerCase())
+      .filter(entry => entry !== '');
+
+    if (ignored.length !== configured.length) {
+      this.log.warn('IgnoredDevices contains entries that are not text; those were skipped.');
+    }
+
+    if (ignored.length > 0) {
+      this.log.debug('Ignoring devices matching:', ignored);
+    }
+
+    return ignored;
+  }
+
+  /** Matches a device against `IgnoredDevices` by device ID or by name. */
+  private isDeviceIgnored(device: { deviceId?: string; label?: string; name?: string }): boolean {
+    if (this.ignoredDevices.length === 0) {
+      return false;
+    }
+
+    return [device.deviceId, device.label, device.name]
+      .filter((value): value is string => typeof value === 'string')
+      .some(value => this.ignoredDevices.includes(value.trim().toLowerCase()));
+  }
+
+  /**
+   * Drops an accessory HomeKit already knows about. Without this, a device
+   * added to `IgnoredDevices` would keep its (now unmanaged) tile in the Home
+   * app until the user removed it by hand.
+   */
+  private removeCachedAccessory(uuid: string): void {
+    const index = this.accessories.findIndex(accessory => accessory.UUID === uuid);
+
+    if (index === -1) {
+      return;
+    }
+
+    const [accessory] = this.accessories.splice(index, 1);
+
+    this.log.info('Removing accessory from HomeKit:', accessory.displayName);
+
+    this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
   }
 
   doesDeviceSupportCapabilities(capabilities: string[]): boolean {
