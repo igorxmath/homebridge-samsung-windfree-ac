@@ -54,6 +54,30 @@
           "title": "Device ID or name",
           "type": "string"
         }
+      },
+      "OptionalHumiditySensor": {
+        "title": "Expose the indoor relative humidity reported by the unit",
+        "description": "Ignored on units that do not report relativeHumidityMeasurement.",
+        "type": "boolean",
+        "default": false
+      },
+      "OptionalFanControl": {
+        "title": "Expose a fan (speed, auto/manual and swing on/off)",
+        "description": "Speed and auto/manual need airConditionerFanMode, swing needs fanOscillationMode; whatever the unit does not report is left out.",
+        "type": "boolean",
+        "default": false
+      },
+      "OptionalSwingDirectionSwitches": {
+        "title": "Expose switches to set vertical/horizontal swing direction",
+        "description": "Ignored on units that do not report fanOscillationMode.",
+        "type": "boolean",
+        "default": false
+      },
+      "OptionalAutoCleanSwitch": {
+        "title": "Expose a switch to enable/disable auto-clean",
+        "description": "Ignored on units that do not report custom.autoCleaningMode.",
+        "type": "boolean",
+        "default": false
       }
     },
     "required": ["name", "BaseURL"]
