@@ -21,7 +21,7 @@ jobs:
           node-version: ${{ matrix.node-version }}
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Lint the project
         run: npm run lint
@@ -29,10 +29,11 @@ jobs:
       - name: Build the project
         run: npm run build
 
-      - name: List, audit, fix outdated dependencies and build again
+      # Report only. This step must never write to package-lock.json: a fix
+      # applied here is invisible to the committed tree, so anything it changed
+      # would be gone by the next run while making this one look clean.
+      # Failures are ignored so an upstream advisory cannot block an unrelated PR.
+      - name: Report outdated and vulnerable dependencies
         run: |
-          npm list --outdated
-          npm audit || true  # ignore failures
-          npm audit fix || true
-          npm list --outdated
-          npm run build
+          npm outdated || true
+          npm audit || true
