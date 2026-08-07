@@ -148,7 +148,7 @@ export class TokenManager {
         body: body.toString(),
       });
     } catch (error) {
-      throw new Error(`Network error while refreshing SmartThings token: ${(error as Error).message}`);
+      throw new Error(`Network error while refreshing SmartThings token: ${(error as Error).message}`, { cause: error });
     }
 
     const text = await response.text();
